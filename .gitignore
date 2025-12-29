@@ -1,0 +1,6 @@
+wip_*
+*.txt
+*.bin
+.DS_Store
+rawdata/
+__pycache__
