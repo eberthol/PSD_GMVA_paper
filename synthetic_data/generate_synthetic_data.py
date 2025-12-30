@@ -7,8 +7,6 @@ from tabulate import tabulate as tab
 import warnings
 
 
-
-
 def read_data_txt(IDs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], folder='../rawdata/txt_files'):
     """
     read waveforms and labels from text files 
@@ -20,7 +18,7 @@ def read_data_txt(IDs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], folder='../rawdata/txt_
     """
 
     data,labels = [], []
-    headers, lines = ['case', 'total', 'gammas', 'neutrons', 'ratio (g/n)'], []
+    headers, lines = ['case', 'total', 'gammas', 'neutrons', 'ratio (g/n)', 'Amax total', 'Amax gammas', 'Amax neutrons'], []
     sumTot, sumG, sumN = 0, 0, 0
 
     for ID in IDs:
@@ -43,10 +41,13 @@ def read_data_txt(IDs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], folder='../rawdata/txt_
                     Ntot,
                     Ngammas,
                     Nneutrons,
-                    f'{Ngammas/Nneutrons:.1f}'
+                    f'{Ngammas/Nneutrons:.1f}',
+                    f'{np.max(d)}',
+                    f'{np.max(g)}',
+                    f'{np.max(n)}',
                     ])
-    lines.append(['---',  '---', '---', '---', '---'])
-    lines.append(['Total', sumTot, sumG, sumN, f'{sumG/sumN:.1f}'])
+    lines.append(['---',  '---', '---', '---', '---', '---', '---', '---'])
+    lines.append(['Total', sumTot, sumG, sumN, f'{sumG/sumN:.1f}' '---', '---', '---'])
     table = tab(lines, headers=headers, tablefmt="GitHub")
     print(table)
 
@@ -289,34 +290,54 @@ def generate_sample(templates, bin_centers, Npulses, sigma, A_min=None, A_max=No
 
     for i in range(Npulses):
         X[i] = generate_synthetic_pulse(amplitudes[i], templates, bin_centers, sigma, Normalize=Normalize)
+    
+    print("Clamped fraction:",
+      np.mean(amplitudes >= bin_centers[-1])) # if this is too large there will be a distortion in the PSD shape -> reduce A_max
 
     return X, amplitudes 
 
-def get_psd_integrals(data, tail_start=9, tail_end=183, total_start = 2):
+def get_psd_integrals(data, total_start=2, total_end=185, tail_start=9):
     """
-    get arrays for PSD plotting
-    parameters:
-    - tail_start:  starting point of the tail integration (realtive to the peak)
-    - tail_end:    end point of the tail integration (realtive to the peak)
-    - total_start: starting point of the "total" integration (realtive to the peak)
-    return:
-    - total: integral of the peak
-    - ttr: tail to total ratio
+    Compute total charge and tail-to-total ratio (PSD).
+
+    Parameters
+    ----------
+    data : (Npulses, Nsamples)
+        Pulse waveforms (NOT normalized)
+    total_start : int
+        Start of total integration window (relative to peak)
+    total_end : int
+        End of total integration window (relative to peak)
+    tail_start : int
+        Start of tail integration window (relative to peak)
+
+    Returns
+    -------
+    totals : array
+        Total integrated charge
+    ttr : array
+        Tail-to-total ratio
     """
-    nofpulses=data.shape[0]
 
-    totals, tails, ttr = [], [], []
-    for i in range(0, nofpulses):
-        peak_position = np.argmax(data[i,:])
+    totals, ttr = [], []
 
-        total = sum(data[i, peak_position-total_start:peak_position+tail_end])
-        tail  = sum(data[i, peak_position+tail_start:peak_position+tail_end])
-        
-        if (total > 0 and tail > 0):
+    for pulse in data:
+        peak_position = np.argmax(pulse)
+
+        lo = peak_position - total_start
+        hi = peak_position + total_end
+
+        if lo < 0 or hi > len(pulse):
+            continue
+
+        total = np.sum(pulse[lo:hi])
+        tail  = np.sum(pulse[peak_position + tail_start : hi])
+
+        if total > 0:
             totals.append(total)
-            tails.append(tail)
-            ttr.append( tail / total)
+            ttr.append(tail / total)
 
-    totals = np.asarray(totals)
-    ttr    = np.asarray(ttr)
-    return totals, ttr
+    return np.asarray(totals), np.asarray(ttr)
+
+
+
