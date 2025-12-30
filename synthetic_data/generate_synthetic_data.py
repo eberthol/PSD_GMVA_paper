@@ -6,7 +6,7 @@ from matplotlib.colors import LogNorm
 from tabulate import tabulate as tab
 import warnings
 
-
+#------ read data ------
 def read_data_txt(IDs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], folder='../rawdata/txt_files'):
     """
     read waveforms and labels from text files 
@@ -67,6 +67,7 @@ def merge_cases_together(data, labels):
 
     return data_merged, labels_merged, neutrons_merged, gammas_merged
 
+#------ pulse selection ------
 def pulse_selection_tight(data, labels, voltage_range = (0.05, 0.5), late_start = 30, late_end = 200, afterpulse_frac = 0.08, peak_position_max = 80):
     """
     Tight selection for the templates
@@ -145,6 +146,7 @@ def pulse_selection_tight(data, labels, voltage_range = (0.05, 0.5), late_start 
     print(table )
     return data_clean, labels_clean
 
+#------ create templates ------
 def make_templates(data, bin_edges = np.linspace(0.05, 0.5, 11), align = True):
     """
     make templates by averaging waveforms in bins of voltage
@@ -254,6 +256,7 @@ def interpolate_template(A, shapes, bin_centers):
 
     return pulse.copy()
 
+#------ generate neutron and gamma pulses from templates------
 def generate_synthetic_pulse(A, templates, bin_centers, sigma, Normalize=True):
     """
     generate a synthetic pulse with noise form the interpolated templates
@@ -300,6 +303,7 @@ def generate_sample(templates, bin_centers, Npulses, sigma, A_min=None, A_max=No
 
     return X, amplitudes 
 
+#------ perform PSD ------
 def get_psd_integrals(data, total_start=2, total_end=185, tail_start=9):
     """
     Compute total charge and tail-to-total ratio (PSD).
@@ -343,5 +347,54 @@ def get_psd_integrals(data, total_start=2, total_end=185, tail_start=9):
 
     return np.asarray(totals), np.asarray(ttr)
 
+#------ pileup ------
+def sample_dt_exponential(rate, dt_sample, dt_max):
+    """
+    Sample time offset using exponential distribution.
+    
+    rate      : event rate (Hz or 1/ns — consistent units!)
+    dt_sample : sampling period
+    dt_max    : maximum allowed shift (in samples)
+    """
 
+    # sample continuous time
+    dt_cont = np.random.exponential(1.0 / rate)
+    # convert to samples
+    dt_samples = int(dt_cont / dt_sample)
+
+    return min(dt_samples, dt_max)
+
+def shift_pulse(pulse, dt):
+    """
+    Shift pulse by dt samples to the right 
+    """
+    shifted = np.zeros_like(pulse)
+    if dt < len(pulse):
+        shifted[dt:] = pulse[:-dt] if dt > 0 else pulse
+    return shifted
+
+def generate_pileup_event(
+    A1, A2,
+    shapes1, shapes2,
+    bin_centers,
+    sigma, # gaussian noise
+    time_shift, # shift in time (number of samples)
+):
+    """
+    Generate a pile-up pulse from 2 pulses.
+    """
+
+    p1 = interpolate_template(A1, shapes1, bin_centers)
+    p2 = interpolate_template(A2, shapes2, bin_centers)
+
+    # --- time offset ---
+    p2_shifted = shift_pulse(p2, time_shift)
+
+    # --- superposition ---
+    pileup = p1 + p2_shifted
+
+    # --- add noise ---
+    pileup += np.random.normal(0.0, sigma, pileup.shape)
+
+    return pileup
 
