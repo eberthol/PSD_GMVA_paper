@@ -145,7 +145,7 @@ def pulse_selection_tight(data, labels, voltage_range = (0.05, 0.5), late_start 
     print(table )
     return data_clean, labels_clean
 
-def make_templates(data, bin_edges = np.linspace(0.05, 0.5, 11)):
+def make_templates(data, bin_edges = np.linspace(0.05, 0.5, 11), align = True):
     """
     make templates by averaging waveforms in bins of voltage
     paper: 10 bins (= 11 edges), in range 0.05V to 0.5V
@@ -171,7 +171,11 @@ def make_templates(data, bin_edges = np.linspace(0.05, 0.5, 11)):
         if counts[i] > 0:
             templates[i] = data[mask].mean(axis=0)
 
+    if align:
+        templates = align_templates(templates, target_idx=60)
+
     templates_norm = templates / templates.max(axis=1, keepdims=True)
+
     print(" counts per bin:", counts)
     return bin_centers, templates, templates_norm
 
