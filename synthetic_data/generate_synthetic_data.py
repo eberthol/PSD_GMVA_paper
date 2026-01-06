@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from tabulate import tabulate as tab
 import warnings
+warnings.filterwarnings("ignore") # for now
 
 #------ read data ------
 def read_data_txt(IDs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], folder='../rawdata/txt_files'):
@@ -415,6 +416,7 @@ def generate_random_pileup_event(
         A_min = 0.05, A_max = 0.5, # min and max for the pulse amplitudes
         rate_hz = 1e6, dt_sample_s = 2e-9, dt_max_samples = 296, # time shift
         noise_sigma = 0., # Guassian noise
+        Normalize = True,
         debug = False # print out some info
         ):
 
@@ -445,6 +447,10 @@ def generate_random_pileup_event(
     # --- add noise (Gaussian) ---
     pileup += np.random.normal(0.0, noise_sigma, pileup.shape)
 
+    # normalize to peak = 1
+    if Normalize:
+        pileup = pileup / np.max(pileup)
+
     # --- DEBUG ---
     if debug:
         print(f'pulse 1: {type1}, amplitude = {A1}')
@@ -452,3 +458,26 @@ def generate_random_pileup_event(
         print(f'time_shift = {time_shift} samples')
 
     return pileup
+
+def generate_pileup_sample(
+    Npulses, # how many events to generate
+    neutron_templates_normalized, gamma_templates_normalized, bin_centers, # templates
+    A_min = 0.05, A_max = 0.5, # min and max for the pulse amplitudes
+    rate_hz = 1e6, dt_sample_s = 2e-9, dt_max_samples = 296, # time shift
+    noise_sigma = 0., # Guassian noise 
+    Normalize=True
+    ):
+    """
+    create a sample of Npulses pulses with pile up
+    """
+    X = np.zeros((Npulses, neutron_templates_normalized.shape[1]))
+    for i in range(Npulses):
+        X[i] = generate_random_pileup_event(
+            neutron_templates_normalized, gamma_templates_normalized, bin_centers,
+            A_min, A_max, 
+            rate_hz, dt_sample_s, dt_max_samples, 
+            noise_sigma, 
+            Normalize
+        )
+    return X
+    
