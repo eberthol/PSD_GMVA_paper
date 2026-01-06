@@ -348,36 +348,48 @@ def get_psd_integrals(data, total_start=2, total_end=185, tail_start=9):
     return np.asarray(totals), np.asarray(ttr)
 
 #------ pileup ------
-def sample_dt_exponential(rate, dt_sample, dt_max):
+def sample_dt_exponential(rate_hz, dt_sample_s, dt_max_samples):
     """
-    Sample time offset using exponential distribution.
-    
-    rate      : event rate (Hz or 1/ns — consistent units!)
-    dt_sample : sampling period
-    dt_max    : maximum allowed shift (in samples)
+    Sample inter-arrival time in ADC samples
+
+    rate_hz      : average event rate (Hz)
+    dt_sample_s : sampling period (s)
+    dt_max_samples  : truncate to waveform length
+
+    ATTENTION: 
+    if dt_max_samples is set at the legnth of the trigger window, then the distribution will peak at this value
+    it is not a bug, it is expected (we are clipping the distribution)
+    QUESTION: what to do with these events?
+        - they are really pile up (the pile up is over 2 trigger windows)
+        - maybe we should throw them away?
+        - maybe we should redraw a random number until it is inside the trigger window?
     """
+    rate_per_sample = rate_hz * dt_sample_s    
 
-    # sample continuous time
-    dt_cont = np.random.exponential(1.0 / rate)
-    # convert to samples
-    dt_samples = int(dt_cont / dt_sample)
+    if rate_per_sample <= 0:
+        print('Sanity Check: Someting is fishy...')
+        return dt_max_samples
 
-    return min(dt_samples, dt_max)
+    # exponential in *samples*
+    delta_samples = np.random.exponential(
+        scale=1.0 / rate_per_sample
+    )
+    return int(min(delta_samples, dt_max_samples))
 
 def shift_pulse(pulse, dt):
     """
     Shift pulse by dt samples to the right 
     """
-    shifted = np.zeros_like(pulse)
+    shifted_pulse = np.zeros_like(pulse)
     if dt < len(pulse):
-        shifted[dt:] = pulse[:-dt] if dt > 0 else pulse
-    return shifted
+        shifted_pulse[dt:] = pulse[:-dt] if dt > 0 else pulse
+    return shifted_pulse
 
 def generate_pileup_event(
     A1, A2,
     shapes1, shapes2,
     bin_centers,
-    sigma, # gaussian noise
+    noise_sigma, # Guassian noise
     time_shift, # shift in time (number of samples)
 ):
     """
@@ -394,7 +406,49 @@ def generate_pileup_event(
     pileup = p1 + p2_shifted
 
     # --- add noise ---
-    pileup += np.random.normal(0.0, sigma, pileup.shape)
+    pileup += np.random.normal(0.0, noise_sigma, pileup.shape)
 
     return pileup
 
+def generate_random_pileup_event(
+        neutron_templates_normalized, gamma_templates_normalized, bin_centers, # templates
+        A_min = 0.05, A_max = 0.5, # min and max for the pulse amplitudes
+        rate_hz = 1e6, dt_sample_s = 2e-9, dt_max_samples = 296, # time shift
+        noise_sigma = 0., # Guassian noise
+        debug = False # print out some info
+        ):
+
+    # randomly chose between neutrons and gamma templates
+    type1, type2  = np.random.choice(['n', 'g'], size=2) 
+    
+    shapes1 = neutron_templates_normalized if type1 == 'n' else gamma_templates_normalized
+    shapes2 = neutron_templates_normalized if type2 == 'n' else gamma_templates_normalized
+
+    # --- random amplitude (uniform) ---
+    A1 = np.random.uniform(A_min, A_max)
+    A2 = np.random.uniform(A_min, A_max)
+    p1 = interpolate_template(A1, shapes1, bin_centers)
+    p2 = interpolate_template(A2, shapes2, bin_centers)
+
+    # --- random time offset (exponential) ---
+    ## do not use time offset if it is superior to dt_max_samples
+    ## CAREFUL: it may be a mistake to do that
+    ## 60 is the HARDCODED position of the first peak - need to make that cleaner
+    time_shift = 1e10
+    while time_shift >= dt_max_samples - 60:
+        time_shift = sample_dt_exponential(rate_hz, dt_sample_s, dt_max_samples)
+    p2_shifted = shift_pulse(p2, time_shift)
+
+    # --- add pulses ---
+    pileup = p1 + p2_shifted
+
+    # --- add noise (Gaussian) ---
+    pileup += np.random.normal(0.0, noise_sigma, pileup.shape)
+
+    # --- DEBUG ---
+    if debug:
+        print(f'pulse 1: {type1}, amplitude = {A1}')
+        print(f'pulse 2: {type2}, amplitude = {A2}')
+        print(f'time_shift = {time_shift} samples')
+
+    return pileup
