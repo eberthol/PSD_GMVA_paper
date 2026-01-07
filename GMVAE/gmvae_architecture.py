@@ -117,15 +117,18 @@ def gmv_loss(x, x_hat, logits, mu, logvar, labels=None, alpha=50):
     alpha: controls the trade-off between the generative task and the classification task.
             A high value (like 50) indicates that the model prioritizes classification accuracy over perfect reconstruction or latent space smoothness. 
             If the model is classifying well but reconstructing poorly, you might lower alpha.
-    - 
+
+        returns 
+        loss funcion
+        seperate components of the loss (useful for sanity checks and to understand the model)
     """
-    recon = F.mse_loss(x_hat, x, reduction='mean') # reconstruction loss (Mean Square Error)
+    reco = F.mse_loss(x_hat, x, reduction='mean') # reconstruction loss (Mean Square Error)
     kl = -0.5 * torch.mean(1 + logvar - mu**2 - logvar.exp()) # KL divergence loss
     ce = F.cross_entropy(logits, labels)
 
-    loss = recon + kl + (alpha * ce)
+    loss = reco + kl + (alpha * ce)
 
-    return loss, recon, kl, ce
+    return loss, reco, kl, ce
 
 #---------------------------------
 #       Training
@@ -155,7 +158,7 @@ def train_gmv_log(model, dataloader, optimizer, device, alpha=50):
     """
 
     model.train()
-    total_loss, total_recon, total_kl, total_ce = 0, 0, 0, 0
+    total_loss, total_reco, total_kl, total_ce = 0, 0, 0, 0
 
     for x, y in dataloader:
         x, y = x.to(device), y.to(device)
@@ -164,15 +167,15 @@ def train_gmv_log(model, dataloader, optimizer, device, alpha=50):
         x_hat, logits, mu, logvar = model(x)
         
         # Calculate individual parts of the loss for logging
-        loss, recon, kl, ce = gmv_loss(x, x_hat, logits, mu, logvar, y, alpha)
+        loss, reco, kl, ce = gmv_loss(x, x_hat, logits, mu, logvar, y, alpha)
         
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
-        total_recon += recon.item()
+        total_reco += reco.item()
         total_kl += kl.item()
         total_ce += ce.item()
 
     n = len(dataloader)
-    return total_loss/n, total_recon/n, total_kl/n, total_ce/n
+    return total_loss/n, total_reco/n, total_kl/n, total_ce/n
