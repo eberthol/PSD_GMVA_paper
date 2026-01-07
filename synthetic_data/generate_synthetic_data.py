@@ -257,6 +257,21 @@ def interpolate_template(A, shapes, bin_centers):
 
     return pulse.copy()
 
+def get_templates(data, labels, bin_edges, Normalized=True):
+    print('Tight selection')
+    data_clean, labels_clean = pulse_selection_tight(data, labels)
+    neutrons_clean = data_clean[labels_clean == 1]
+    gammas_clean = data_clean[labels_clean == 0]
+    print('\nneutrons clean')
+    bin_centers, templates_neutrons, templates_neutrons_norm = make_templates(neutrons_clean, bin_edges, align = True)
+    print('\ngammas clean')
+    _, templates_gammas, templates_gammas_norm = make_templates(gammas_clean, bin_edges, align = True)
+
+    if Normalized:
+        return templates_neutrons_norm, templates_gammas_norm, bin_centers
+    else:
+        return templates_neutrons, templates_gammas, bin_centers
+
 #------ generate neutron and gamma pulses from templates------
 def generate_synthetic_pulse(A, templates, bin_centers, sigma, Normalize=True):
     """
@@ -457,7 +472,7 @@ def generate_random_pileup_event(
         print(f'pulse 2: {type2}, amplitude = {A2}')
         print(f'time_shift = {time_shift} samples')
 
-    return pileup
+    return pileup, time_shift
 
 def generate_pileup_sample(
     Npulses, # how many events to generate
@@ -471,13 +486,64 @@ def generate_pileup_sample(
     create a sample of Npulses pulses with pile up
     """
     X = np.zeros((Npulses, neutron_templates_normalized.shape[1]))
+    time_shifts = np.zeros(Npulses)
     for i in range(Npulses):
-        X[i] = generate_random_pileup_event(
+        X[i], time_shifts[i] = generate_random_pileup_event(
             neutron_templates_normalized, gamma_templates_normalized, bin_centers,
             A_min, A_max, 
             rate_hz, dt_sample_s, dt_max_samples, 
             noise_sigma, 
             Normalize
         )
-    return X
-    
+    return X, time_shifts
+
+#------ generate training/test datasets ------
+def genereate_synthetic_data(templates_norm_n_g, bin_centers, statistics_n_g_pu, voltage_range, sigma_noise):
+    """
+    Generate synthetic neutron, gammaa and pile up samples
+
+    Label convention
+     1 -> neutrons
+     0 -> gammas
+     2 -> pile-up
+    """
+    X, Y = [], []
+    print(f'NEUTRONS: {statistics_n_g_pu[0]}')
+    neutrons_synth, _ = generate_sample(templates = templates_norm_n_g[0], 
+                                 bin_centers =  bin_centers, 
+                                 Npulses = statistics_n_g_pu[0], 
+                                 sigma = sigma_noise,
+                                 A_min=voltage_range[0], A_max=voltage_range[1],
+                                 Normalize=True) # must be true for ML
+    neutrons_label = np.ones(neutrons_synth.shape[0])
+
+    print(f'GAMMAS: {statistics_n_g_pu[1]}')
+    gammas_synth, _ = generate_sample(templates = templates_norm_n_g[1], 
+                                    bin_centers =  bin_centers, 
+                                    Npulses = statistics_n_g_pu[1], 
+                                    sigma = sigma_noise,
+                                    A_min=voltage_range[0], A_max=voltage_range[1],
+                                    Normalize=True) # must be true for ML
+    gammas_label = np.zeros(gammas_synth.shape[0])
+
+    print(f'PILEUP: {statistics_n_g_pu[2]}')
+    piluep_synth, time_shifts_pileup = generate_pileup_sample(
+                                                Npulses = statistics_n_g_pu[2],
+                                                neutron_templates_normalized = templates_norm_n_g[0], 
+                                                gamma_templates_normalized = templates_norm_n_g[1], 
+                                                bin_centers = bin_centers,
+                                                A_min = voltage_range[0], A_max = voltage_range[1], 
+                                                noise_sigma = sigma_noise,
+                                                Normalize=True # must be true for ML
+                                                )
+    piluep_label = np.ones(piluep_synth.shape[0])*2
+
+    X = np.concatenate((neutrons_synth, gammas_synth, piluep_synth), axis=0)
+    Y = np.concatenate((neutrons_label, gammas_label, piluep_label), axis=0)
+    print('\nX shape', X.shape)
+    print('sanity check, Y shape', Y.shape)
+    print('time_shifts shape (pile-up only)', time_shifts_pileup.shape)
+
+    return X, Y, time_shifts_pileup
+
+
