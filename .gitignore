@@ -5,3 +5,8 @@ wip_*
 rawdata/
 __pycache__
 *.npz
+GMVAE/wandb/
+Slides/
+wandb/
+WeightAndBisses_dummy.py
+.vscode/
