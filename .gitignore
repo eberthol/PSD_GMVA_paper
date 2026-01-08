@@ -4,3 +4,4 @@ wip_*
 .DS_Store
 rawdata/
 __pycache__
+*.npz
