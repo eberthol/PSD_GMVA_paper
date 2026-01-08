@@ -73,11 +73,10 @@ def plot_loss_functions(total_loss, total_reco, total_kl, total_ce, fig_size=(10
 #---------------------------------
 #      Confusion Matrix
 #---------------------------------
-def plot_confusion_matrix(dataloader, model):
+def plot_confusion_matrix(dataloader, model, device = "cpu"):
     """
     Plot normalized confusion matrix (values in %)
     """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     y_true, y_pred = [], []
     model.eval()
     with torch.no_grad():
@@ -121,9 +120,8 @@ def reconstruction_error(model, x_sample, y_sample):
             cat_mse = torch.mean((x_sample[mask] - x_hat[mask])**2).item()
             print(f" {name} Reconstruction Error: {cat_mse:.6f}")
 
-def plot_random_reconstructions(model, dataloader, num_samples=6):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+def plot_random_reconstructions(model, dataloader, num_samples=6, device="cpu"):
+ 
     model.eval()
     class_names = ['γ', 'n', 'p']
     
@@ -305,3 +303,59 @@ def plot_interactive_3d_pca(dataloader, model, device='cpu'):
 
     # fig.show()
     fig.show(renderer="browser")
+
+def plot_3d_pca_projections(dataloader, model, device='cpu'):
+    features, labels = [], []
+    model.eval()
+    
+    with torch.no_grad():
+        for x, y in dataloader:
+            x = x.to(device)
+            # Use encoder to get high-dimensional latent vectors
+            logits, _, _ = model.encoder(x) 
+            
+            features.append(logits.cpu().numpy())
+            labels.append(y.numpy())
+
+    # Flatten collected batches into single arrays
+    X = np.vstack(features)
+    y = np.hstack(labels)
+    
+    # 1. Fit 3D PCA
+    pca = PCA(n_components=3)
+    X_pca = pca.fit_transform(X)
+    evr = pca.explained_variance_ratio_
+
+    # 2. Create a figure with 3 subplots side-by-side
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+    
+    class_names = ['γ', 'n', 'p']
+    colors = ['#007bff', '#ff7f0e', '#a9a9a9']
+    opacities = [0.7, 0.7, 0.2]
+    
+    # Define the pairs to plot: (axis_x, axis_y, title)
+    pairs = [
+        (0, 1, "PC1 vs PC2"),
+        (0, 2, "PC1 vs PC3"),
+        (1, 2, "PC2 vs PC3")
+    ]
+
+    for i, (ax_idx, ay_idx, title) in enumerate(pairs):
+        ax = axs[i]
+        for c_idx, name in enumerate(class_names):
+            mask = (y == c_idx)
+            ax.scatter(X_pca[mask, ax_idx], X_pca[mask, ay_idx], 
+                       s=2, alpha=opacities[c_idx], color=colors[c_idx], label=name)
+        
+        ax.set_title(f"{title}\n({evr[ax_idx]:.1%} + {evr[ay_idx]:.1%} var)")
+        ax.set_xlabel(f"PC{ax_idx+1}")
+        ax.set_ylabel(f"PC{ay_idx+1}")
+        ax.grid(True, linestyle='--', alpha=0.3)
+
+    # 3. Add a single legend for the entire figure
+    handles, labels = axs[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.1), 
+               ncol=3, title="Particle Type", markerscale=5)
+
+    plt.tight_layout()
+    plt.show()
