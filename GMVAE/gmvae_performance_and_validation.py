@@ -16,6 +16,7 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import ConfusionMatrixDisplay
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
+from sklearn.calibration import calibration_curve
 
 # !pip3 install umap-learn
 # import umap
@@ -57,7 +58,7 @@ class GMVAEAnalyzer:
                 x_hat, logits, mu, logvar = self.model(x)
 
                 if return_y:
-                    out["y_true"].append(y.numpy())
+                    out["y_true"].append(y.cpu().numpy())
 
                 if return_x:
                     out["x"].append(x.cpu().numpy())
@@ -69,6 +70,8 @@ class GMVAEAnalyzer:
                     probs = torch.softmax(logits, dim=1)
                     out["probs"].append(probs.cpu().numpy())
                 # Argmax(logits) -> predicted classes   
+                # - logits gives 3 scores (one of each class)
+                # - here we say that the prediction corresponds to the higher class
                 if return_preds:
                     preds = torch.argmax(logits, dim=1)
                     out["preds"].append(preds.cpu().numpy())
@@ -86,6 +89,61 @@ class GMVAEAnalyzer:
                 out[k] = np.vstack(out[k])
 
         return out
+    
+#---------------------------------
+#       Helper Functions
+#---------------------------------
+
+def get_categories_dict():
+    return {
+            'n': 1, # neutron
+            'g': 0, # gamma
+            'p': 2 # pile-up
+              } 
+
+def get_names():
+    names  = {'g': 'γ', 'n': 'n', 'p': 'Pile-up'}
+    return names
+
+#---------------------------------
+#       Loss Function
+#---------------------------------
+
+def plot_loss_function(loss, title='total loss = MSE + KL + (alpha * CE)', logScale=True, fig_size=(8, 5)):
+    _, ax = plt.subplots(1, 1, figsize=fig_size)
+    ax.set_title(title)
+    ax.plot(loss)
+    ax.set_xlabel("Epoch", fontsize=12)
+    ax.set_ylabel("Loss", fontsize=12)
+    if logScale:
+        ax.set_yscale('log')
+    ax.grid()
+    plt.tight_layout()
+    plt.show()
+
+def plot_loss_functions(total_loss, total_reco, total_kl, total_ce, fig_size=(10, 5)):
+    _, axs = plt.subplots(2, 2, figsize=fig_size)
+    axs = axs.flatten()
+    axs[0].set_title(f'total loss = MSE + KL + (alpha * CE)')
+    axs[1].set_title(f'Reconstruction loss (MSE)')
+    axs[2].set_title(f'KL divergence loss (KL)')
+    axs[3].set_title(f'Cross entropy loss CE')
+
+    axs[0].plot(total_loss)
+    axs[1].plot(total_reco)
+    axs[2].plot(total_kl)
+    axs[3].plot(total_ce)
+
+
+    for i in range(0, 4):
+        axs[i].set_xlabel("Epoch", fontsize=12)
+        axs[i].set_ylabel("Loss", fontsize=12)
+        if i!=1:
+            axs[i].set_yscale('log')
+        axs[i].grid()
+    plt.tight_layout()
+    plt.show()
+
 #---------------------------------
 #      Confusion Matrix
 #---------------------------------
@@ -232,11 +290,7 @@ def plot_random_reconstructions(analyzer, num_samples=6, seed=None):
 #---------------------------------
 #      Latent Space
 #---------------------------------
-def plot_2d_pca_from_arrays(
-    z,
-    y,
-    class_names=('γ', 'n', 'p'),
-):
+def plot_2d_pca_from_arrays(z, y, class_names=('γ', 'n', 'p'),):
     """
     z : np.ndarray (N, latent_dim)
     y : np.ndarray (N,)
@@ -319,11 +373,7 @@ def plot_2d_pca(analyzer):
         y=out["y_true"],
     )
 
-def plot_3d_pca_projections_from_arrays(
-    z,
-    y,
-    class_names=('γ', 'n', 'p'),
-):
+def plot_3d_pca_projections_from_arrays(z, y, class_names=('γ', 'n', 'p'),):
     """
     z : np.ndarray (N, latent_dim)
     y : np.ndarray (N,)
@@ -398,11 +448,7 @@ def plot_3d_pca_projections(analyzer):
         y=out["y_true"],
     )
 
-def plot_3d_pca_from_arrays(
-    z,
-    y,
-    class_names=('γ', 'n', 'p'),
-):
+def plot_3d_pca_from_arrays(z, y, class_names=('γ', 'n', 'p'),):
     """
     z : np.ndarray (N, latent_dim)
     y : np.ndarray (N,)
@@ -476,11 +522,7 @@ def plot_3d_pca_from_arrays(
     plt.tight_layout()
     plt.show()
 
-def plot_interactive_3d_pca_from_arrays(
-    z,
-    y,
-    class_names=('γ', 'n', 'p'),
-):
+def plot_interactive_3d_pca_from_arrays(z, y, class_names=('γ', 'n', 'p'),):
     """
     z : np.ndarray (N, latent_dim)
     y : np.ndarray (N,)
@@ -600,41 +642,124 @@ def plot_roc_curve(analyzer):
     )
 
 #---------------------------------
-#       Loss Function
+#      Calibration Curves
 #---------------------------------
+# plots the mean predicted probability against the actual fraction of positives
 
-def plot_loss_function(loss, title='total loss = MSE + KL + (alpha * CE)', logScale=True, fig_size=(8, 5)):
-    _, ax = plt.subplots(1, 1, figsize=fig_size)
-    ax.set_title(title)
-    ax.plot(loss)
-    ax.set_xlabel("Epoch", fontsize=12)
-    ax.set_ylabel("Loss", fontsize=12)
-    if logScale:
-        ax.set_yscale('log')
-    ax.grid()
-    plt.tight_layout()
+def plot_calibrationCurve_from_arrays(y_true_cat, prob_cat, cat='p'):
+    if (cat!='p') and (cat!='n') and (cat!='g'):
+        print('cat must be p, n or g')
+        return 0
+        
+    prob_true, prob_pred = calibration_curve(y_true_cat, prob_cat, n_bins=10 )
+    plt.figure(figsize=(6,6))
+    plt.plot(prob_pred, prob_true, 'o-', label='GMVAE')
+    plt.plot([0,1], [0,1], '--', color='gray')
+    plt.xlabel(f"Predicted P({cat})")
+    plt.ylabel(f"Observed fraction {cat}")
+    plt.title(f"{cat} confidence calibration")
+    plt.legend()
     plt.show()
 
-def plot_loss_functions(total_loss, total_reco, total_kl, total_ce, fig_size=(10, 5)):
-    _, axs = plt.subplots(2, 2, figsize=fig_size)
-    axs = axs.flatten()
-    axs[0].set_title(f'total loss = MSE + KL + (alpha * CE)')
-    axs[1].set_title(f'Reconstruction loss (MSE)')
-    axs[2].set_title(f'KL divergence loss (KL)')
-    axs[3].set_title(f'Cross entropy loss CE')
+def plot_calibrationCurve(analyzer, cat):
+    dict_cats  = get_categories_dict()
+    
+    out = analyzer._collect(
+        return_probs=True,
+        return_y=True
+    )
 
-    axs[0].plot(total_loss)
-    axs[1].plot(total_reco)
-    axs[2].plot(total_kl)
-    axs[3].plot(total_ce)
+    prob_cat = out['probs'][:, dict_cats[cat]] 
+    y_true_cat = (out['y_true'] == dict_cats[cat])
+    plot_calibrationCurve_from_arrays(y_true_cat, prob_cat, cat)
 
-
-    for i in range(0, 4):
-        axs[i].set_xlabel("Epoch", fontsize=12)
-        axs[i].set_ylabel("Loss", fontsize=12)
-        if i!=1:
-            axs[i].set_yscale('log')
-        axs[i].grid()
-    plt.tight_layout()
+def plot_all_calibration_curves(analyzer):
+    dict_cats = get_categories_dict()
+    colors = {'g': 'blue', 'n': 'green', 'p': 'red'}
+    names  = get_names()
+    
+    out = analyzer._collect(return_probs=True, return_y=True)
+    
+    plt.figure(figsize=(8, 8))
+    
+    for cat, idx in dict_cats.items():
+        # Prepare arrays for specific category
+        prob_cat = out['probs'][:, idx]
+        y_true_cat = (out['y_true'] == idx)
+        
+        # Calculate curve
+        prob_true, prob_pred = calibration_curve(y_true_cat, prob_cat, n_bins=10)
+        
+        # Plot individual category
+        plt.plot(prob_pred, prob_true, 'o-', label=f'{names[cat]}', color=colors[cat])
+    
+    # Reference line and formatting
+    plt.plot([0, 1], [0, 1], '--', color='gray', label='Perfectly Calibrated')
+    plt.xlabel("Predicted Probability")
+    plt.ylabel("Observed Fraction")
+    plt.title("Calibration Curves")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
     plt.show()
 
+
+
+#---------------------------------
+#      Separation plots
+#---------------------------------
+# how well one category is separated from the others
+def plot_separation_from_arrays(cat_prob, cat_true, cat, Nbins=30, log=False):
+    names = get_names()
+
+    plt.figure(figsize=(8,5))
+    plt.hist(cat_prob[cat_true],  bins=Nbins, alpha=0.6, label=f'True {names[cat]}', density=True)
+    plt.hist(cat_prob[~cat_true], bins=Nbins, alpha=0.6, label=f'Not {names[cat]}', density=True)
+    plt.xlabel(f"P({names[cat]})")
+    plt.ylabel("Normalized")
+    plt.legend()
+    if log:
+        plt.yscale('log')
+    plt.title(f"{names[cat]} probability separation")
+    plt.show()
+
+def plot_separation(analyzer, cat, Nbins=30, log=False):
+    dict_cats  = get_categories_dict()
+
+    out = analyzer._collect(
+        return_probs=True,
+        return_y=True
+    )
+    cat_prob   = out['probs'][:, dict_cats[cat]]
+    cat_true = (out['y_true'] == dict_cats[cat])
+    plot_separation_from_arrays(cat_prob, cat_true, cat, Nbins, log)
+
+def plot_all_separations(analyzer, Nbins=30, log=False):
+    dict_cats = get_categories_dict()
+    names = get_names()
+    
+    # Collect data once to save time
+    out = analyzer._collect(return_probs=True, return_y=True)
+    
+    # Create a figure with 1 row and 3 columns
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    
+    for i, (cat_key, idx) in enumerate(dict_cats.items()):
+        cat_prob = out['probs'][:, idx]
+        cat_true = (out['y_true'] == idx)
+        
+        ax = axes[i]
+        ax.hist(cat_prob[cat_true], bins=Nbins, alpha=0.6, 
+                label=f'True {names[cat_key]}', density=True, color='C0')
+        ax.hist(cat_prob[~cat_true], bins=Nbins, alpha=0.6, 
+                label=f'Not {names[cat_key]}', density=True, color='C1')
+        
+        ax.set_xlabel(f"P({names[cat_key]})")
+        ax.set_ylabel("Normalized Density")
+        ax.set_title(f"{names[cat_key]} Separation")
+        ax.legend()
+        
+        if log:
+            ax.set_yscale('log')
+            
+    plt.tight_layout()
+    plt.show()
