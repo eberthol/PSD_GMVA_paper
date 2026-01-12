@@ -712,8 +712,8 @@ def plot_separation_from_arrays(cat_prob, cat_true, cat, Nbins=30, log=False):
     names = get_names()
 
     plt.figure(figsize=(8,5))
-    plt.hist(cat_prob[cat_true],  bins=Nbins, alpha=0.6, label=f'True {names[cat]}', density=True)
-    plt.hist(cat_prob[~cat_true], bins=Nbins, alpha=0.6, label=f'Not {names[cat]}', density=True)
+    plt.hist(cat_prob[cat_true],  bins=Nbins, range=(0., 1.), alpha=0.6, label=f'True {names[cat]}', density=True)
+    plt.hist(cat_prob[~cat_true], bins=Nbins, range=(0., 1.), alpha=0.6, label=f'Not {names[cat]}',  density=True)
     plt.xlabel(f"P({names[cat]})")
     plt.ylabel("Normalized")
     plt.legend()
@@ -748,10 +748,10 @@ def plot_all_separations(analyzer, Nbins=30, log=False):
         cat_true = (out['y_true'] == idx)
         
         ax = axes[i]
-        ax.hist(cat_prob[cat_true], bins=Nbins, alpha=0.6, 
-                label=f'True {names[cat_key]}', density=True, color='C0')
-        ax.hist(cat_prob[~cat_true], bins=Nbins, alpha=0.6, 
-                label=f'Not {names[cat_key]}', density=True, color='C1')
+        ax.hist(cat_prob[cat_true], bins=Nbins, range=(0., 1.), alpha=0.6, 
+                label=f'True {names[cat_key]}', density=True)
+        ax.hist(cat_prob[~cat_true], bins=Nbins, range=(0., 1.), alpha=0.6, 
+                label=f'Not {names[cat_key]}', density=True)
         
         ax.set_xlabel(f"P({names[cat_key]})")
         ax.set_ylabel("Normalized Density")
