@@ -17,12 +17,18 @@ from sklearn.metrics import confusion_matrix
 from sklearn.metrics import ConfusionMatrixDisplay
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
 from sklearn.calibration import calibration_curve
+from sklearn.metrics import silhouette_score
+from sklearn.manifold import TSNE
 
 # !pip3 install umap-learn
 # import umap
 
 #!pip3 install plotly
 import plotly.graph_objects as go # interactive plots
+
+import wandb
+import io
+from PIL import Image
 
 
 class GMVAEAnalyzer:
@@ -119,7 +125,6 @@ def plot_loss_function(loss, title='total loss = MSE + KL + (alpha * CE)', logSc
         ax.set_yscale('log')
     ax.grid()
     plt.tight_layout()
-    plt.show()
 
 def plot_loss_functions(total_loss, total_reco, total_kl, total_ce, fig_size=(10, 5)):
     _, axs = plt.subplots(2, 2, figsize=fig_size)
@@ -142,7 +147,6 @@ def plot_loss_functions(total_loss, total_reco, total_kl, total_ce, fig_size=(10
             axs[i].set_yscale('log')
         axs[i].grid()
     plt.tight_layout()
-    plt.show()
 
 #---------------------------------
 #      Confusion Matrix
@@ -155,9 +159,7 @@ def plot_confusion_matrix_from_arrays(y_true, y_pred, class_names=('γ', 'n', 'p
     """
 
     norm = "true" if normalize else None
-
     cm = confusion_matrix(y_true, y_pred, normalize=norm)
-
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
 
     fig, ax = plt.subplots(figsize=(5, 5))
@@ -167,7 +169,7 @@ def plot_confusion_matrix_from_arrays(y_true, y_pred, class_names=('γ', 'n', 'p
     ax.grid(False)
 
     plt.tight_layout()
-    plt.show()
+    return fig
 
 def plot_confusion_matrix(analyzer):
     """
@@ -268,7 +270,8 @@ def plot_random_reconstructions_from_arrays(
 
     axes[0].legend(loc="upper right")
     plt.tight_layout()
-    plt.show()
+
+    return fig
 
 def plot_random_reconstructions(analyzer, num_samples=6, seed=None):
     out = analyzer._collect(
@@ -356,7 +359,7 @@ def plot_2d_pca_from_arrays(z, y, class_names=('γ', 'n', 'p'),):
     )
 
     plt.tight_layout()
-    plt.show()
+    return fig
 
 def plot_2d_pca(analyzer):
     """
@@ -373,65 +376,69 @@ def plot_2d_pca(analyzer):
         y=out["y_true"],
     )
 
-def plot_3d_pca_projections_from_arrays(z, y, class_names=('γ', 'n', 'p'),):
+def plot_3d_pca_projections_from_arrays(z, y, draw_priority = ['p', 'g', 'n'], return_list=False):
     """
     z : np.ndarray (N, latent_dim)
     y : np.ndarray (N,)
+    return_list : If True, returns [fig1, fig2, fig3]. If False, returns one large fig.
     """
+
+    cat_dict = get_categories_dict() # {'n': 1, 'g': 0, 'p': 2}
+    name_map = get_names()           # {'g': 'γ', 'n': 'n', 'p': 'Pile-up
+    colors = {'g': '#007bff', 'n': '#ff7f0e', 'p': '#a9a9a9'}
+    alphas = {'g': 0.8,       'n': 0.8,       'p': 0.2}
+
 
     # --- Fit 3D PCA on latent space ---
     pca = PCA(n_components=3)
     z_pca = pca.fit_transform(z)
     evr = pca.explained_variance_ratio_
 
-    # --- Create figure ---
-    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
-
-    colors = ['#007bff', '#ff7f0e', '#a9a9a9']
-    opacities = [0.7, 0.7, 0.2]
-
     pairs = [
         (0, 1, "PC1 vs PC2"),
         (0, 2, "PC1 vs PC3"),
         (1, 2, "PC2 vs PC3"),
     ]
-
-    for i, (ax_idx, ay_idx, title) in enumerate(pairs):
-        ax = axs[i]
-
-        for c_idx, name in enumerate(class_names):
-            mask = (y == c_idx)
+    def _plot_axes(ax, ax_idx, ay_idx):
+        """Helper to draw points in the correct order on a specific axis."""
+        for cat_key in draw_priority:
+            class_idx = cat_dict[cat_key]
+            mask = (y == class_idx)
             ax.scatter(
-                z_pca[mask, ax_idx],
-                z_pca[mask, ay_idx],
-                s=3,
-                alpha=opacities[c_idx],
-                color=colors[c_idx],
-                label=name,
+                z_pca[mask, ax_idx], 
+                z_pca[mask, ay_idx], 
+                s=3, 
+                alpha=alphas[cat_key], 
+                color=colors[cat_key], 
+                label=name_map[cat_key]
             )
 
-        ax.set_title(
-            f"{title}\n({evr[ax_idx]:.1%} + {evr[ay_idx]:.1%} var)",
-            fontsize=12,
-        )
-        ax.set_xlabel(f"PC{ax_idx + 1}")
-        ax.set_ylabel(f"PC{ay_idx + 1}")
-        ax.grid(True, linestyle="--", alpha=0.3)
-
-    # --- Shared legend ---
-    handles, labels = axs[0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.1),
-        ncol=len(class_names),
-        title="Particle Type",
-        markerscale=4,
-    )
-
-    plt.tight_layout()
-    plt.show()
+    if not return_list:
+        fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+        for i, (ax_idx, ay_idx, title) in enumerate(pairs):
+            _plot_axes(axs[i], ax_idx, ay_idx)
+            axs[i].set_title(f"{title}\n({evr[ax_idx]:.1%} + {evr[ay_idx]:.1%} var)")
+            axs[i].set_xlabel(f"PC{ax_idx+1}"); axs[i].set_ylabel(f"PC{ay_idx+1}")
+        
+        # Consistent legend order: γ, n, Pile-up
+        handles, labels = axs[0].get_legend_handles_labels()
+        # Re-sort legend to match specific order for the paper
+        order = [labels.index(name_map[k]) for k in ['g', 'n', 'p']]
+        fig.legend([handles[i] for i in order], [labels[i] for i in order], 
+                   loc="upper center", bbox_to_anchor=(0.5, 1.15), ncol=3, markerscale=4)
+        plt.tight_layout()
+        return fig
+    else:
+        # --- W&B Logic: List of 3 Individual Figures ---
+        individual_figs = []
+        for ax_idx, ay_idx, title in pairs:
+            fig, ax = plt.subplots(figsize=(6, 5))
+            _plot_axes(ax, ax_idx, ay_idx)
+            ax.set_title(f"{title} ({evr[ax_idx]:.1%} + {evr[ay_idx]:.1%} var)")
+            ax.legend(markerscale=4)
+            plt.tight_layout()
+            individual_figs.append(fig)
+        return individual_figs
 
 def plot_3d_pca_projections(analyzer):
     """
@@ -464,10 +471,6 @@ def plot_3d_pca_from_arrays(z, y, class_names=('γ', 'n', 'p'),):
 
     colors = ['#007bff', '#ff7f0e', '#a9a9a9']
     opacities = [0.7, 0.7, 0.2]
-
-    #  class_names = ['γ', 'n', 'p']
-    # colors = ['#1f77b4', '#ff7f0e', '#a9a9a9'] # Blue, Orange, Gray
-    # opacities = [0.8, 0.8, 0.2] 
 
     for i, name in enumerate(class_names):
         mask = (y == i)
@@ -520,7 +523,7 @@ def plot_3d_pca_from_arrays(z, y, class_names=('γ', 'n', 'p'),):
     )
 
     plt.tight_layout()
-    plt.show()
+    return fig
 
 def plot_interactive_3d_pca_from_arrays(z, y, class_names=('γ', 'n', 'p'),):
     """
@@ -611,7 +614,7 @@ def plot_3d_pca(analyzer, interactive=False):
 #---------------------------------
 
 def plot_roc_curve_from_ararys(probs, labels, class_names=['γ', 'n', 'p']):
-    plt.figure(figsize=(8, 6))
+    fig =  plt.figure(figsize=(8, 6))
     for i, name in enumerate(class_names):
         # probs[:, i] is the probability of class i
         fpr, tpr, _ = roc_curve(labels == i, probs[:, i])
@@ -624,7 +627,7 @@ def plot_roc_curve_from_ararys(probs, labels, class_names=['γ', 'n', 'p']):
     plt.title('Receiver Operating Characteristic (ROC) per Class')
     plt.legend(loc='lower right')
     plt.grid(alpha=0.3)
-    plt.show()
+    return fig
 
 def plot_roc_curve(analyzer):
     """
@@ -659,7 +662,6 @@ def plot_calibrationCurve_from_arrays(y_true_cat, prob_cat, cat='p'):
     plt.ylabel(f"Observed fraction {cat}")
     plt.title(f"{cat} confidence calibration")
     plt.legend()
-    plt.show()
 
 def plot_calibrationCurve(analyzer, cat):
     dict_cats  = get_categories_dict()
@@ -673,19 +675,16 @@ def plot_calibrationCurve(analyzer, cat):
     y_true_cat = (out['y_true'] == dict_cats[cat])
     plot_calibrationCurve_from_arrays(y_true_cat, prob_cat, cat)
 
-def plot_all_calibration_curves(analyzer):
+def plot_all_calibration_curves_from_arrays(y_true, probs):
     dict_cats = get_categories_dict()
     colors = {'g': 'blue', 'n': 'green', 'p': 'red'}
     names  = get_names()
-    
-    out = analyzer._collect(return_probs=True, return_y=True)
-    
-    plt.figure(figsize=(8, 8))
-    
+
+    fig = plt.figure(figsize=(8, 8))
     for cat, idx in dict_cats.items():
         # Prepare arrays for specific category
-        prob_cat = out['probs'][:, idx]
-        y_true_cat = (out['y_true'] == idx)
+        prob_cat = probs[:, idx]
+        y_true_cat = (y_true == idx)
         
         # Calculate curve
         prob_true, prob_pred = calibration_curve(y_true_cat, prob_cat, n_bins=10)
@@ -700,18 +699,19 @@ def plot_all_calibration_curves(analyzer):
     plt.title("Calibration Curves")
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.show()
+    return fig
 
-
+def plot_all_calibration_curves(analyzer):
+    out = analyzer._collect(return_probs=True, return_y=True)
+    plot_all_calibration_curves_from_arrays(out["y_true"], out["probs"])
 
 #---------------------------------
-#      Separation plots
+#      Separation Histograms
 #---------------------------------
 # how well one category is separated from the others
 def plot_separation_from_arrays(cat_prob, cat_true, cat, Nbins=30, log=False):
     names = get_names()
-
-    plt.figure(figsize=(8,5))
+    fig = plt.figure(figsize=(8,5))
     plt.hist(cat_prob[cat_true],  bins=Nbins, range=(0., 1.), alpha=0.6, label=f'True {names[cat]}', density=True)
     plt.hist(cat_prob[~cat_true], bins=Nbins, range=(0., 1.), alpha=0.6, label=f'Not {names[cat]}',  density=True)
     plt.xlabel(f"P({names[cat]})")
@@ -720,7 +720,7 @@ def plot_separation_from_arrays(cat_prob, cat_true, cat, Nbins=30, log=False):
     if log:
         plt.yscale('log')
     plt.title(f"{names[cat]} probability separation")
-    plt.show()
+    return fig
 
 def plot_separation(analyzer, cat, Nbins=30, log=False):
     dict_cats  = get_categories_dict()
@@ -762,4 +762,158 @@ def plot_all_separations(analyzer, Nbins=30, log=False):
             ax.set_yscale('log')
             
     plt.tight_layout()
-    plt.show()
+
+
+#---------------------------------
+#      logs for wandb
+#---------------------------------
+
+import io
+from PIL import Image
+
+def fig_to_wandb_image(fig):
+    """
+    Converts a Matplotlib figure to a W&B-ready image 
+    with high DPI and no excess white space.
+    """
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.1, dpi=120)
+    buf.seek(0)
+    img = Image.open(buf)
+    return wandb.Image(img)
+
+
+def log_clustering_quality(analyzer, step=None, sample_size=5000):
+
+    # The score is a ratio of cohesion (how close points are to their own cluster) and separation (how far they are from the nearest neighboring cluster). 
+
+#     0.71 – 1.0 (Strong): You have very clear, dense clusters. Your pulses are being perfectly discriminated.
+#     0.51 – 0.70 (Reasonable): Good separation, but some pulses might be "borderline" (common with pile-up events that look like neutrons).
+#     0.26 – 0.50 (Weak): Clusters are loose and likely overlapping. This usually correlates with the "flat" plateau in your calibration curves.
+#     < 0.25 (Poor/No Clustering): The latent space is a "hairball." The model hasn't learned distinct features for neutrons vs. gammas
+
+
+    # Collect latent vectors (mu) and true labels
+    out = analyzer._collect(return_y=True, return_latent=True)
+    z = out["z"]        # High-dimensional latent space
+    labels = out["y_true"]
+
+    # Calculate mean Silhouette Score
+    # Range: -1 (wrongly clustered) to +1 (perfectly separated)
+    if sample_size>0:
+        score = silhouette_score(z, labels, sample_size=sample_size, random_state=42)
+    else:
+        score = silhouette_score(z, labels)
+    
+    # Log to W&B
+    wandb.log({"Clustering/Silhouette_Score": score,
+               "epoch": step  })
+    return score
+
+
+def run_final_inference_report(analyzer, class_names=('γ', 'n', 'p')):
+    """
+    Performs full inference, generates all diagnostic plots, 
+    and logs them to the 'Inference/' namespace in W&B.
+    """
+    print("🚀 Starting Final Inference Evaluation...")
+    
+    # 1. Collect everything in one go (efficient)
+    out = analyzer._collect(
+        return_y=True, 
+        return_probs=True, 
+        return_preds=True, 
+        return_latent=True
+    )
+    
+    y_true = out["y_true"]
+    y_pred = out["preds"]
+    probs = out["probs"]
+    z = out["z"]
+    
+    report_dict = {}
+
+    # --- Confusion Matrix ---
+    fig_cm = plot_confusion_matrix_from_arrays(y_true, y_pred, class_names=class_names)
+    report_dict["Inference/Confusion_Matrix"] = fig_to_wandb_image(fig_cm)
+    plt.close(fig_cm)
+
+    # --- Calibration Curves ---
+    fig_cal = plot_all_calibration_curves_from_arrays(y_true, probs)
+    report_dict["Inference/Calibration_All"] = fig_to_wandb_image(fig_cal)
+    plt.close(fig_cal)
+
+    # --- Separation Histograms  ---
+    dict_cats  = get_categories_dict() # {'g': 0, 'n': 1, 'p': 2}
+    name = get_names() # {'g': 'γ', 'n': 'n', 'p': 'Pile-up'}
+    for k, v in dict_cats.items():
+        cat_prob   = out['probs'][:, v]
+        cat_true = (out['y_true'] == v)
+        fig_sep = plot_separation_from_arrays(cat_prob, cat_true, k, Nbins=50, log=True)
+        report_dict[f"Inference_separation/Separation_{name[k]}"] = fig_to_wandb_image(fig_sep)
+        plt.close(fig_sep)
+
+    # --- PCA  ---
+    pca_figs = plot_3d_pca_projections_from_arrays(z, y_true, return_list=True, draw_priority = ['p', 'g', 'n'])
+    wandb.log({
+    "Inference_Latent/PCA_PC1_PC2": fig_to_wandb_image(pca_figs[0]),
+    "Inference_Latent/PCA_PC1_PC3": fig_to_wandb_image(pca_figs[1]),
+    "Inference_Latent/PCA_PC2_PC3": fig_to_wandb_image(pca_figs[2]),
+    })
+    for f in pca_figs: plt.close(f)
+
+    pca_3d = plot_3d_pca_from_arrays(z, y_true, class_names=('γ', 'n', 'p'))
+    report_dict[f"Inference_Latent/PCA_3D"] = fig_to_wandb_image(pca_3d)
+    plt.close(pca_3d)
+
+    # --- t-SNE ---
+    cat_dict = get_categories_dict()
+    name_map = get_names()
+    colors = {0: '#007bff', 1: '#ff7f0e', 2: '#a9a9a9'} 
+    # Sampling for speed if dataset is huge, but keeping it representative
+    Nsamples = 10000
+    idx = np.random.choice(len(z), min(len(z), Nsamples), replace=False)
+    z_sub, y_sub = z[idx], y_true[idx]
+    tsne_res = TSNE(n_components=2, random_state=42).fit_transform(z_sub)
+
+    fig_lat, ax = plt.subplots(figsize=(7, 6))
+    for cat_key, class_idx in cat_dict.items():
+        mask = (y_sub == class_idx)
+        ax.scatter(
+            tsne_res[mask, 0], 
+            tsne_res[mask, 1], 
+            c=colors[class_idx], 
+            label=name_map[cat_key],
+            alpha=0.6, 
+            s=3,
+            # Plot pile-up first (zorder=1) so it stays in background
+            zorder=1 if cat_key == 'p' else 2 
+        )
+
+    ax.set_title("t-SNE Latent Space Comparison")
+    ax.set_xlabel("t-SNE 1")
+    ax.set_ylabel("t-SNE 2")
+    ax.legend(title="Particle Type", markerscale=4, loc='best')
+    report_dict["Inference_Latent/t-SNE"] = fig_to_wandb_image(fig_lat)
+    plt.close(fig_lat)
+
+    # idx = np.random.choice(len(z), min(len(z), Nsamples), replace=False)
+    # z_sub, y_sub = z[idx], y_true[idx]
+    # tsne_res = TSNE(n_components=2, random_state=42).fit_transform(z_sub)
+    # fig_lat, ax = plt.subplots(1, 1, figsize=(6, 6))
+    # # for ax, data, title in zip(axes, [ tsne_res], [ "t-SNE"]):
+    # scatter = ax.scatter(tsne_res[:, 0], tsne_res[:, 1], c=y_sub, cmap='viridis', alpha=0.5, s = 3)
+    # ax.set_title("t-SNE - 2 components")
+    # cbar = fig_lat.colorbar(scatter, ax=ax, ticks=range(len(class_names)))
+    # cbar.set_ticklabels(class_names)
+    # report_dict["Inference_Latent/t-SNE"] = fig_to_wandb_image(fig_lat)
+    # plt.close(fig_lat)
+
+    # --- 5. Log Summary Metrics ---
+    # These show up in the W&B run table (not a plot)
+    score = silhouette_score(z, y_true, sample_size=Nsamples, random_state=42)
+    wandb.run.summary["final_silhouette_score"] = score
+
+    # Push all plots to W&B
+    wandb.log(report_dict)
+    print("✅ Final Report Sent to W&B.")

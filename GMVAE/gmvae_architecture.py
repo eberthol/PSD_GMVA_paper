@@ -8,6 +8,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+
+import wandb
+
 """
 First step: reproduce architecture as described in the paper DOI: 10.1016/j.anucene.2024.110496
 
@@ -179,3 +184,138 @@ def train_gmv_log(model, dataloader, optimizer, device, alpha=50):
 
     n = len(dataloader)
     return total_loss/n, total_reco/n, total_kl/n, total_ce/n
+
+#----------------------------------------------------------
+#       Training and logging with W&B
+#----------------------------------------------------------
+
+def train_epoch_wandb(model, dataloader, optimizer, device, alpha=50):
+    """
+     training function that logs metrics at every epoch
+    """
+    model.train()
+    running_loss, running_recon, running_kl, running_ce = 0.0, 0.0, 0.0, 0.0
+    correct, total = 0, 0
+
+    for x, y in dataloader:
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        
+        x_hat, logits, mu, logvar = model(x)
+        
+        # Loss components
+        recon = F.mse_loss(x_hat, x, reduction='mean')
+        kl = -0.5 * torch.mean(1 + logvar - mu**2 - logvar.exp())
+        ce = F.cross_entropy(logits, y)
+        loss = recon + kl + (alpha * ce)
+        
+        loss.backward()
+        optimizer.step()
+
+        # Metrics for classification accuracy
+        _, predicted = torch.max(logits.data, 1)
+        total += y.size(0)
+        correct += (predicted == y).sum().item()
+
+        running_loss += loss.item()
+        running_recon += recon.item()
+        running_kl += kl.item()
+        running_ce += ce.item()
+
+    n = len(dataloader)
+    # Log to W&B
+    wandb.log({
+        "epoch_loss": running_loss / n,
+        "recon_loss": running_recon / n,
+        "kl_div": running_kl / n,
+        "ce_loss": running_ce / n,
+        "train_acc": 100 * correct / total
+    })
+
+
+# def log_visualizations(model, dataloader, device, epoch):
+    # model.eval()
+    # all_mu, all_labels = [], []
+    
+    # with torch.no_grad():
+    #     x, y = next(iter(dataloader))
+    #     x = x.to(device)
+    #     x_hat, _, mu, _ = model(x)
+        
+    #     # # Log Reconstruction Comparison
+    #     # fig, ax = plt.subplots(1, 2)
+    #     # ax[0].plot(x[0].cpu().numpy(), label="Original")
+    #     # ax[1].plot(x_hat[0].cpu().numpy(), label="Reconstructed", color='orange')
+    #     # wandb.log({"reconstruction_sample": wandb.Image(plt)})
+    #     # plt.close()
+
+    #     # Log Latent Space (t-SNE)
+    #     tsne = TSNE(n_components=2).fit_transform(mu.cpu().numpy())
+    #     plt.figure(figsize=(8,6))
+    #     scatter = plt.scatter(tsne[:, 0], tsne[:, 1], c=y.numpy(), cmap='viridis', alpha=0.8)
+    #     plt.colorbar(scatter, ticks=[0, 1, 2], label="0:Gamma, 1:Neutron, 2:Pile-up")
+    #     plt.title(f"t-SNE Latent Space (Epoch {epoch})")
+    #     plt.xlabel("t-SNE dimension 1")
+    #     plt.ylabel("t-SNE dimension 2")
+    #     wandb.log({"latent_space": wandb.Image(plt)})
+    #     plt.close()
+
+import io
+from PIL import Image
+
+def fig_to_wandb_image(fig):
+    """
+    Converts a Matplotlib figure to a W&B-ready image 
+    with high DPI and no excess white space.
+    """
+    buf = io.BytesIO()
+    # bbox_inches='tight' is the magic part that removes the white margins
+    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.1, dpi=120)
+    buf.seek(0)
+    img = Image.open(buf)
+    return wandb.Image(img)
+
+def log_visualizations(model, dataloader, device, epoch):
+    model.eval()
+    with torch.no_grad():
+        x, y = next(iter(dataloader))
+        x = x.to(device)
+        x_hat, _, mu, _ = model(x)
+        
+        # 1. Reconstruction Sample (using fig_to_wandb_image for clean borders)
+        fig_reco, ax_reco = plt.subplots(1, 2, figsize=(10, 4))
+        ax_reco[0].plot(x[0].cpu().numpy())
+        ax_reco[0].set_title("Original Pulse")
+        ax_reco[1].plot(x_hat[0].cpu().numpy(), color='orange')
+        ax_reco[1].set_title("Reconstructed Pulse")
+        wandb.log({"reconstruction_sample": fig_to_wandb_image(fig_reco), "epoch": epoch})
+        plt.close(fig_reco)
+
+        # 2. Dimensionality Reduction Comparison (PCA vs t-SNE)
+        latent_data = mu.cpu().numpy()
+        
+        # Calculate PCA and t-SNE
+        pca_res = PCA(n_components=2).fit_transform(latent_data)
+        tsne_res = TSNE(n_components=2, random_state=42).fit_transform(latent_data)
+        
+        fig_dim, axes = plt.subplots(1, 2, figsize=(15, 6))
+        class_labels = ['γ', 'n', 'p']
+        
+        # Plot PCA
+        scatter_pca = axes[0].scatter(pca_res[:, 0], pca_res[:, 1], c=y.numpy(), cmap='viridis', alpha=0.6)
+        axes[0].set_title("PCA (Global Variance)")
+        axes[0].set_xlabel("PC 1")
+        axes[0].set_ylabel("PC 2")
+        
+        # Plot t-SNE
+        scatter_tsne = axes[1].scatter(tsne_res[:, 0], tsne_res[:, 1], c=y.numpy(), cmap='viridis', alpha=0.6)
+        axes[1].set_title("t-SNE (Local Clusters)")
+        axes[1].set_xlabel("t-SNE 1")
+        axes[1].set_ylabel("t-SNE 2")
+        
+        # Add a shared colorbar for both
+        cbar = fig_dim.colorbar(scatter_tsne, ax=axes, orientation='vertical', fraction=0.02, pad=0.04)
+        cbar.set_label("0: Gamma, 1: Neutron, 2: Pile-up")
+
+        wandb.log({"latent_space_comparison": fig_to_wandb_image(fig_dim), "epoch": epoch})
+        plt.close(fig_dim)
