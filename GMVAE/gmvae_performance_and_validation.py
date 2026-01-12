@@ -638,18 +638,3 @@ def plot_loss_functions(total_loss, total_reco, total_kl, total_ce, fig_size=(10
     plt.tight_layout()
     plt.show()
 
-
-    plt.figure(figsize=(8, 6))
-    for i, name in enumerate(class_names):
-        # probs[:, i] is the probability of class i
-        fpr, tpr, _ = roc_curve(labels == i, probs[:, i])
-        roc_auc = auc(fpr, tpr)
-        plt.plot(fpr, tpr, label=f'{name} (AUC = {roc_auc:.2f})')
-
-    plt.plot([0, 1], [0, 1], 'k--', alpha=0.5) # Diagonal line
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC curve per Class')
-    plt.legend(loc='lower right')
-    plt.grid(alpha=0.3)
-    plt.show()
