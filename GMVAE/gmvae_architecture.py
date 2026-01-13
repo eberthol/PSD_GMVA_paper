@@ -225,40 +225,12 @@ def train_epoch_wandb(model, dataloader, optimizer, device, alpha=50):
     n = len(dataloader)
     # Log to W&B
     wandb.log({
-        "epoch_loss": running_loss / n,
-        "recon_loss": running_recon / n,
-        "kl_div": running_kl / n,
-        "ce_loss": running_ce / n,
-        "train_acc": 100 * correct / total
+        "Training/total_loss": running_loss / n,
+        "Training/recon_loss_MSE": running_recon / n,
+        "Training/KL_div_loss": running_kl / n,
+        "Training/CE_loss": running_ce / n,
+        "Training/accuracy": 100 * correct / total
     })
-
-
-# def log_visualizations(model, dataloader, device, epoch):
-    # model.eval()
-    # all_mu, all_labels = [], []
-    
-    # with torch.no_grad():
-    #     x, y = next(iter(dataloader))
-    #     x = x.to(device)
-    #     x_hat, _, mu, _ = model(x)
-        
-    #     # # Log Reconstruction Comparison
-    #     # fig, ax = plt.subplots(1, 2)
-    #     # ax[0].plot(x[0].cpu().numpy(), label="Original")
-    #     # ax[1].plot(x_hat[0].cpu().numpy(), label="Reconstructed", color='orange')
-    #     # wandb.log({"reconstruction_sample": wandb.Image(plt)})
-    #     # plt.close()
-
-    #     # Log Latent Space (t-SNE)
-    #     tsne = TSNE(n_components=2).fit_transform(mu.cpu().numpy())
-    #     plt.figure(figsize=(8,6))
-    #     scatter = plt.scatter(tsne[:, 0], tsne[:, 1], c=y.numpy(), cmap='viridis', alpha=0.8)
-    #     plt.colorbar(scatter, ticks=[0, 1, 2], label="0:Gamma, 1:Neutron, 2:Pile-up")
-    #     plt.title(f"t-SNE Latent Space (Epoch {epoch})")
-    #     plt.xlabel("t-SNE dimension 1")
-    #     plt.ylabel("t-SNE dimension 2")
-    #     wandb.log({"latent_space": wandb.Image(plt)})
-    #     plt.close()
 
 import io
 from PIL import Image
@@ -274,48 +246,3 @@ def fig_to_wandb_image(fig):
     buf.seek(0)
     img = Image.open(buf)
     return wandb.Image(img)
-
-def log_visualizations(model, dataloader, device, epoch):
-    model.eval()
-    with torch.no_grad():
-        x, y = next(iter(dataloader))
-        x = x.to(device)
-        x_hat, _, mu, _ = model(x)
-        
-        # 1. Reconstruction Sample (using fig_to_wandb_image for clean borders)
-        fig_reco, ax_reco = plt.subplots(1, 2, figsize=(10, 4))
-        ax_reco[0].plot(x[0].cpu().numpy())
-        ax_reco[0].set_title("Original Pulse")
-        ax_reco[1].plot(x_hat[0].cpu().numpy(), color='orange')
-        ax_reco[1].set_title("Reconstructed Pulse")
-        wandb.log({"reconstruction_sample": fig_to_wandb_image(fig_reco), "epoch": epoch})
-        plt.close(fig_reco)
-
-        # 2. Dimensionality Reduction Comparison (PCA vs t-SNE)
-        latent_data = mu.cpu().numpy()
-        
-        # Calculate PCA and t-SNE
-        pca_res = PCA(n_components=2).fit_transform(latent_data)
-        tsne_res = TSNE(n_components=2, random_state=42).fit_transform(latent_data)
-        
-        fig_dim, axes = plt.subplots(1, 2, figsize=(15, 6))
-        class_labels = ['γ', 'n', 'p']
-        
-        # Plot PCA
-        scatter_pca = axes[0].scatter(pca_res[:, 0], pca_res[:, 1], c=y.numpy(), cmap='viridis', alpha=0.6)
-        axes[0].set_title("PCA (Global Variance)")
-        axes[0].set_xlabel("PC 1")
-        axes[0].set_ylabel("PC 2")
-        
-        # Plot t-SNE
-        scatter_tsne = axes[1].scatter(tsne_res[:, 0], tsne_res[:, 1], c=y.numpy(), cmap='viridis', alpha=0.6)
-        axes[1].set_title("t-SNE (Local Clusters)")
-        axes[1].set_xlabel("t-SNE 1")
-        axes[1].set_ylabel("t-SNE 2")
-        
-        # Add a shared colorbar for both
-        cbar = fig_dim.colorbar(scatter_tsne, ax=axes, orientation='vertical', fraction=0.02, pad=0.04)
-        cbar.set_label("0: Gamma, 1: Neutron, 2: Pile-up")
-
-        wandb.log({"latent_space_comparison": fig_to_wandb_image(fig_dim), "epoch": epoch})
-        plt.close(fig_dim)

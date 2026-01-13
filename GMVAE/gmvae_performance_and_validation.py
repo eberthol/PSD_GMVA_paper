@@ -783,7 +783,6 @@ def fig_to_wandb_image(fig):
     img = Image.open(buf)
     return wandb.Image(img)
 
-
 def log_clustering_quality(analyzer, step=None, sample_size=5000):
 
     # The score is a ratio of cohesion (how close points are to their own cluster) and separation (how far they are from the nearest neighboring cluster). 
@@ -792,7 +791,6 @@ def log_clustering_quality(analyzer, step=None, sample_size=5000):
 #     0.51 – 0.70 (Reasonable): Good separation, but some pulses might be "borderline" (common with pile-up events that look like neutrons).
 #     0.26 – 0.50 (Weak): Clusters are loose and likely overlapping. This usually correlates with the "flat" plateau in your calibration curves.
 #     < 0.25 (Poor/No Clustering): The latent space is a "hairball." The model hasn't learned distinct features for neutrons vs. gammas
-
 
     # Collect latent vectors (mu) and true labels
     out = analyzer._collect(return_y=True, return_latent=True)
@@ -811,13 +809,12 @@ def log_clustering_quality(analyzer, step=None, sample_size=5000):
                "epoch": step  })
     return score
 
-
-def run_final_inference_report(analyzer):
+def run_final_inference_report(analyzer, dir="Inference"):
     """
     Performs full inference, generates all diagnostic plots, 
     and logs them to the 'Inference/' namespace in W&B.
     """
-    print("🚀 Starting Final Inference Evaluation...")
+    print(f"🚀 Starting Final {dir} Evaluation...")
     
     # 1. Collect everything in one go (efficient)
     out = analyzer._collect(
@@ -839,22 +836,22 @@ def run_final_inference_report(analyzer):
 
     # --- Confusion Matrix ---
     fig_cm = plot_confusion_matrix_from_arrays(y_true, y_pred)
-    report_dict["Inference_General/Confusion_Matrix"] = fig_to_wandb_image(fig_cm)
+    report_dict[f"{dir}_General/Confusion_Matrix"] = fig_to_wandb_image(fig_cm)
     plt.close(fig_cm)
 
     # --- Calibration Curves ---
     fig_cal = plot_all_calibration_curves_from_arrays(y_true, probs)
-    report_dict["Inference_General/Calibration"] = fig_to_wandb_image(fig_cal)
+    report_dict[f"{dir}_General/Calibration"] = fig_to_wandb_image(fig_cal)
     plt.close(fig_cal)
 
     # --- ROC Curves ---
     fig_roc = plot_roc_curve_from_ararys(probs, y_true)
-    report_dict["Inference_General/ROC"] = fig_to_wandb_image(fig_roc)
+    report_dict[f"{dir}_General/ROC"] = fig_to_wandb_image(fig_roc)
     plt.close(fig_roc)
 
     # --- Reconstruction ---
     fig_reco = plot_random_reconstructions_from_arrays(x, x_hat, y_true, y_pred, num_samples=6, class_names=('γ', 'n', 'p'), seed=42)
-    report_dict["Inference_Reconstruction/ROC"] = fig_to_wandb_image(fig_reco)
+    report_dict[f"{dir}_Reconstruction/ROC"] = fig_to_wandb_image(fig_reco)
     plt.close(fig_reco)
 
     # --- Separation Histograms  ---
@@ -864,20 +861,20 @@ def run_final_inference_report(analyzer):
         cat_prob   = out['probs'][:, v]
         cat_true = (out['y_true'] == v)
         fig_sep = plot_separation_from_arrays(cat_prob, cat_true, k, Nbins=50, log=True)
-        report_dict[f"Inference_separation/Separation_{name[k]}"] = fig_to_wandb_image(fig_sep)
+        report_dict[f"{dir}_separation/Separation_{name[k]}"] = fig_to_wandb_image(fig_sep)
         plt.close(fig_sep)
 
     # --- PCA  ---
     pca_figs = plot_3d_pca_projections_from_arrays(z, y_true, return_list=True, draw_priority = ['p', 'g', 'n'])
     wandb.log({
-    "Inference_Latent/PCA_PC1_PC2": fig_to_wandb_image(pca_figs[0]),
-    "Inference_Latent/PCA_PC1_PC3": fig_to_wandb_image(pca_figs[1]),
-    "Inference_Latent/PCA_PC2_PC3": fig_to_wandb_image(pca_figs[2]),
+    f"{dir}_Latent/PCA_PC1_PC2": fig_to_wandb_image(pca_figs[0]),
+    f"{dir}_Latent/PCA_PC1_PC3": fig_to_wandb_image(pca_figs[1]),
+    f"{dir}_Latent/PCA_PC2_PC3": fig_to_wandb_image(pca_figs[2]),
     })
     for f in pca_figs: plt.close(f)
 
     pca_3d = plot_3d_pca_from_arrays(z, y_true, class_names=('γ', 'n', 'p'))
-    report_dict[f"Inference_Latent/PCA_3D"] = fig_to_wandb_image(pca_3d)
+    report_dict[f"{dir}_Latent/PCA_3D"] = fig_to_wandb_image(pca_3d)
     plt.close(pca_3d)
 
     # --- t-SNE ---
@@ -910,14 +907,10 @@ def run_final_inference_report(analyzer):
     report_dict["Inference_Latent/t-SNE"] = fig_to_wandb_image(fig_lat)
     plt.close(fig_lat)
 
-
-
-
-
     # --- 5. Log Summary Metrics ---
     # These show up in the W&B run table (not a plot)
     score = silhouette_score(z, y_true, sample_size=Nsamples, random_state=42)
-    wandb.run.summary["final_silhouette_score"] = score
+    wandb.run.summary[f"{dir}_final_silhouette_score"] = score
 
     # Push all plots to W&B
     wandb.log(report_dict)
