@@ -152,16 +152,22 @@ def plot_loss_functions(total_loss, total_reco, total_kl, total_ce, fig_size=(10
 #      Confusion Matrix
 #---------------------------------
 
-def plot_confusion_matrix_from_arrays(y_true, y_pred, class_names=('γ', 'n', 'p'), normalize=True, title="Normalized Confusion Matrix"):
+def plot_confusion_matrix_from_arrays(y_true, y_pred, normalize=True, title="Normalized Confusion Matrix"):
     """
     y_true : np.ndarray (N,)
     y_pred : np.ndarray (N,)
     """
+    cat_dict = get_categories_dict()  # {'g': 0, 'n': 1, 'p': 2}
+    name_map = get_names()            # {'g': 'γ', 'n': 'n', 'p': 'Pile-up'}
+    ## need to sort everything according to y_pred 
+    sorted_keys = sorted(cat_dict, key=cat_dict.get)
+    labels_order = [cat_dict[k] for k in sorted_keys] # not really necessary but apparently it avoids bugs...
+    display_labels = [name_map[k] for k in sorted_keys]
 
     norm = "true" if normalize else None
-    cm = confusion_matrix(y_true, y_pred, normalize=norm)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+    cm = confusion_matrix(y_true, y_pred, labels=labels_order, normalize=norm)
 
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
     fig, ax = plt.subplots(figsize=(5, 5))
     disp.plot(ax=ax, cmap=plt.cm.Blues, values_format=".1%" if normalize else "d", colorbar=True)
 
@@ -219,15 +225,7 @@ def reconstruction_error(analyzer):
     y_sample = out["y_true"]
     reconstruction_error_from_arrays(x_hat, x_sample, y_sample)
 
-def plot_random_reconstructions_from_arrays(
-    x,
-    x_hat,
-    y_true,
-    y_pred,
-    num_samples=6,
-    class_names=('γ', 'n', 'p'),
-    seed=None,
-):
+def plot_random_reconstructions_from_arrays(x, x_hat, y_true, y_pred, num_samples=6, class_names=('γ', 'n', 'p'), seed=None):
     """
     x, x_hat : np.ndarray (N, T)
     y_true   : np.ndarray (N,)
@@ -613,13 +611,16 @@ def plot_3d_pca(analyzer, interactive=False):
 #      ROC curce
 #---------------------------------
 
-def plot_roc_curve_from_ararys(probs, labels, class_names=['γ', 'n', 'p']):
+def plot_roc_curve_from_ararys(probs, labels):
+    cat_dict = get_categories_dict() # {'n': 1, 'g': 0, 'p': 2}
+    name_map = get_names()           # {'g': 'γ', 'n': 'n', 'p': 'Pile-up
+
     fig =  plt.figure(figsize=(8, 6))
-    for i, name in enumerate(class_names):
+    for cat, i in cat_dict.items():
         # probs[:, i] is the probability of class i
         fpr, tpr, _ = roc_curve(labels == i, probs[:, i])
         roc_auc = auc(fpr, tpr)
-        plt.plot(fpr, tpr, label=f'{name} (AUC = {roc_auc:.2f})')
+        plt.plot(fpr, tpr, label=f'{name_map[cat]} (AUC = {roc_auc:.2f})')
 
     plt.plot([0, 1], [0, 1], 'k--', alpha=0.5) # Diagonal line
     plt.xlabel('False Positive Rate')
@@ -811,7 +812,7 @@ def log_clustering_quality(analyzer, step=None, sample_size=5000):
     return score
 
 
-def run_final_inference_report(analyzer, class_names=('γ', 'n', 'p')):
+def run_final_inference_report(analyzer):
     """
     Performs full inference, generates all diagnostic plots, 
     and logs them to the 'Inference/' namespace in W&B.
@@ -820,12 +821,15 @@ def run_final_inference_report(analyzer, class_names=('γ', 'n', 'p')):
     
     # 1. Collect everything in one go (efficient)
     out = analyzer._collect(
+        return_x=True,
         return_y=True, 
         return_probs=True, 
         return_preds=True, 
-        return_latent=True
+        return_latent=True,
+        return_reco=True
     )
-    
+    x = out["x"]
+    x_hat = out["x_hat"]
     y_true = out["y_true"]
     y_pred = out["preds"]
     probs = out["probs"]
@@ -834,14 +838,24 @@ def run_final_inference_report(analyzer, class_names=('γ', 'n', 'p')):
     report_dict = {}
 
     # --- Confusion Matrix ---
-    fig_cm = plot_confusion_matrix_from_arrays(y_true, y_pred, class_names=class_names)
-    report_dict["Inference/Confusion_Matrix"] = fig_to_wandb_image(fig_cm)
+    fig_cm = plot_confusion_matrix_from_arrays(y_true, y_pred)
+    report_dict["Inference_General/Confusion_Matrix"] = fig_to_wandb_image(fig_cm)
     plt.close(fig_cm)
 
     # --- Calibration Curves ---
     fig_cal = plot_all_calibration_curves_from_arrays(y_true, probs)
-    report_dict["Inference/Calibration_All"] = fig_to_wandb_image(fig_cal)
+    report_dict["Inference_General/Calibration"] = fig_to_wandb_image(fig_cal)
     plt.close(fig_cal)
+
+    # --- ROC Curves ---
+    fig_roc = plot_roc_curve_from_ararys(probs, y_true)
+    report_dict["Inference_General/ROC"] = fig_to_wandb_image(fig_roc)
+    plt.close(fig_roc)
+
+    # --- Reconstruction ---
+    fig_reco = plot_random_reconstructions_from_arrays(x, x_hat, y_true, y_pred, num_samples=6, class_names=('γ', 'n', 'p'), seed=42)
+    report_dict["Inference_Reconstruction/ROC"] = fig_to_wandb_image(fig_reco)
+    plt.close(fig_reco)
 
     # --- Separation Histograms  ---
     dict_cats  = get_categories_dict() # {'g': 0, 'n': 1, 'p': 2}
@@ -889,7 +903,6 @@ def run_final_inference_report(analyzer, class_names=('γ', 'n', 'p')):
             # Plot pile-up first (zorder=1) so it stays in background
             zorder=1 if cat_key == 'p' else 2 
         )
-
     ax.set_title("t-SNE Latent Space Comparison")
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
@@ -897,17 +910,9 @@ def run_final_inference_report(analyzer, class_names=('γ', 'n', 'p')):
     report_dict["Inference_Latent/t-SNE"] = fig_to_wandb_image(fig_lat)
     plt.close(fig_lat)
 
-    # idx = np.random.choice(len(z), min(len(z), Nsamples), replace=False)
-    # z_sub, y_sub = z[idx], y_true[idx]
-    # tsne_res = TSNE(n_components=2, random_state=42).fit_transform(z_sub)
-    # fig_lat, ax = plt.subplots(1, 1, figsize=(6, 6))
-    # # for ax, data, title in zip(axes, [ tsne_res], [ "t-SNE"]):
-    # scatter = ax.scatter(tsne_res[:, 0], tsne_res[:, 1], c=y_sub, cmap='viridis', alpha=0.5, s = 3)
-    # ax.set_title("t-SNE - 2 components")
-    # cbar = fig_lat.colorbar(scatter, ax=ax, ticks=range(len(class_names)))
-    # cbar.set_ticklabels(class_names)
-    # report_dict["Inference_Latent/t-SNE"] = fig_to_wandb_image(fig_lat)
-    # plt.close(fig_lat)
+
+
+
 
     # --- 5. Log Summary Metrics ---
     # These show up in the W&B run table (not a plot)
