@@ -2,7 +2,9 @@ wip_*
 *.txt
 *.bin
 .DS_Store
-rawdata/
+rawdata/PSD_measured_data.py
+rawdata/pulseParser.py
+rawdata/Parser_original_not_working.py
 __pycache__
 *.npz
 GMVAE/wandb/
