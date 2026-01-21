@@ -3,7 +3,12 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
-from tabulate import tabulate as tab
+from tabulate import tabulate 
+import generate_synthetic_data as gsd
+from collections import OrderedDict
+import pandas as pd
+
+
 import warnings
 warnings.filterwarnings("ignore") # for now
 
@@ -25,7 +30,7 @@ def read_data_txt(IDs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], folder='../rawdata/txt_
     for ID in IDs:
         caseID = f'case{ID}'
         d=np.loadtxt(f'{folder}/Pulse_waveform_{caseID}.txt')
-        l=np.loadtxt(f'{folder}/PSD_label_{caseID}.txt')
+        l=np.loadtxt(f'{folder}/Pulse_label_{caseID}.txt')
         n = d[l == 1]
         g = d[l == 0]
         data.append(d)
@@ -49,10 +54,10 @@ def read_data_txt(IDs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], folder='../rawdata/txt_
                     ])
     lines.append(['---',  '---', '---', '---', '---', '---', '---', '---'])
     lines.append(['Total', sumTot, sumG, sumN, f'{sumG/sumN:.1f}' '---', '---', '---'])
-    table = tab(lines, headers=headers, tablefmt="GitHub")
+    table = tabulate(lines, headers=headers, tablefmt="GitHub")
     print(table)
 
-    return data, labels 
+    return np.array(data), np.array(labels) 
 
 def merge_cases_together(data, labels):
     """
@@ -143,12 +148,171 @@ def pulse_selection_tight(data, labels, voltage_range = (0.05, 0.5), late_start 
     lines.append(['---',  '---', '---'])
     lines.append(['Nsel',  Nsel, f'{Nsel*100/Ntot:.1f}'])
 
-    table = tab(lines, headers=headers, tablefmt="GitHub")
+    table = tabulate(lines, headers=headers, tablefmt="GitHub")
     print(table )
     return data_clean, labels_clean
 
+def get_total_integral(data):
+    total_start=2
+    total_end=185
+    totals = []
+    for pulse in data:
+        peak_position = np.argmax(pulse)
+        lo = peak_position - total_start
+        hi = peak_position + total_end
+
+        if lo < 0 or hi > len(pulse):
+            totals.append(np.nan)
+            continue
+        
+        total = np.sum(pulse[lo:hi])
+        if total > 0:
+            totals.append(total)
+        else:
+            totals.append(np.nan)
+    totals = np.array(totals)
+    return totals
+
+def reject_afterpulses(data, late_start, late_end, afterpulse_frac):
+    """
+        reject after pulses contained in a window [late_start, late_end] defined w.r.t peak
+        if they are larger than (afterpulse_frac * peak amplitude)
+        returns a mask to apply to the data
+    """
+    N, L = data.shape
+
+    # get peak positions and amplitudes
+    peak_idx = np.argmax(data, axis=1)
+    peak_val = np.max(data, axis=1)
+
+    # Late window indices
+    late_offsets = np.arange(late_start, late_end)
+    late_indices = peak_idx[:, None] + late_offsets[None, :]
+    late_indices = np.clip(late_indices, 0, L - 1)
+
+    # Late window values
+    late_values = data[np.arange(N)[:, None], late_indices]
+    late_max = np.max(late_values, axis=1)
+
+    # Afterpulse / pile-up rejection
+    mask_afterpulse = late_max <= afterpulse_frac * peak_val
+
+    return  mask_afterpulse
+
+def cutflow_table(cutflow):
+    table_data = [[k] + list(v.values()) for k, v in cutflow.items()]
+    headers = ["Step"] + list(cutflow["Input"].keys())
+    col_formats = ("", ".0f", ".4f", ".4f", ".0f", ".4f", ".0f", ".4f")
+    print(tabulate(table_data, headers=headers, tablefmt="", floatfmt=col_formats))
+    df = pd.DataFrame(cutflow)
+    return df
+
+def count_and_eff(mask, ref_mask):
+    """
+    mask: boolean mask at current step
+    ref_mask: reference mask (previous step or input)
+    """
+    N = np.sum(mask)
+    Nref = np.sum(ref_mask)
+    eff_rel = N / Nref if Nref > 0 else 0
+    return N, eff_rel
+
+def per_label_stats(mask, labels, label, ref_mask):
+    m = (labels == label)
+    N = np.sum(mask & m)
+    Nref = np.sum(ref_mask & m)
+    eff_rel = N / Nref if Nref > 0 else 0
+    return N, eff_rel
+
+def energy_selection_tight(data, labels, Vsamples_range, Vpeak_range, late_start, late_end, afterpulse_frac):
+
+    label_map={1: "neutron", 0: "gamma"}
+    cutflow = OrderedDict()
+    N0 = len(data)
+    mask0 = np.ones(N0, dtype=bool)
+    cutflow["Input"] = {
+        "N": N0,
+        "eff_abs": 1.0,
+        "eff_rel": 1.0,
+    }
+    # Per-class at input
+    for lbl, name in label_map.items():
+        cutflow["Input"][f"N_{name}"] = np.sum(labels == lbl)
+        cutflow["Input"][f"eff_{name}"] = 1.0
+
+    
+    # --------------------------------------------------
+    # Step 1: energy selection
+    # --------------------------------------------------
+    pulse_intengrals = get_total_integral(data)
+    mask_E = (pulse_intengrals >= Vsamples_range[0]) & (pulse_intengrals <= Vsamples_range[1])
+    data_sel = data[mask_E]
+    labels_sel = labels[mask_E]
+
+    N1, eff1 = count_and_eff(mask_E, mask0)
+    cutflow["Energy selection"] = {
+        "N": N1,
+        "eff_abs": N1 / N0,
+        "eff_rel": eff1,
+    }
+    for lbl, name in label_map.items():
+        Nlbl, efflbl = per_label_stats(mask_E, labels, lbl, mask0)
+        cutflow["Energy selection"][f"N_{name}"] = Nlbl
+        cutflow["Energy selection"][f"eff_{name}"] = efflbl
+
+    # --------------------------------------------------
+    # Step 2: amplitude cut
+    # --------------------------------------------------
+    Vpeak = np.max(data_sel, axis=1)
+    mask_amp = (Vpeak >= Vpeak_range[0]) & (Vpeak <= Vpeak_range[1])
+    data_sel = data_sel[mask_amp]
+    labels_sel = labels_sel[mask_amp]
+    
+    mask2_full = mask_E.copy()
+    mask2_full[mask_E] = mask_amp
+    N2, eff2 = count_and_eff(mask2_full, mask_E)
+    cutflow["Amplitude cut"] = {
+        "N": N2,
+        "eff_abs": N2 / N0,
+        "eff_rel": eff2,
+    }
+    for lbl, name in label_map.items():
+        Nlbl, efflbl = per_label_stats(mask2_full, labels, lbl, mask_E)
+        cutflow["Amplitude cut"][f"N_{name}"] = Nlbl
+        cutflow["Amplitude cut"][f"eff_{name}"] = efflbl
+
+    # --------------------------------------------------
+    # Step 3: afterpulse rejection
+    # --------------------------------------------------
+    mask3 = reject_afterpulses(
+        data_sel,
+        late_start=late_start,
+        late_end=late_end,
+        afterpulse_frac=afterpulse_frac
+    )
+    
+    mask3_full = mask2_full.copy()
+    mask3_full[mask2_full] = mask3
+
+    N3, eff3 = count_and_eff(mask3_full, mask2_full)
+    cutflow["Afterpulse rejection"] = {
+        "N": N3,
+        "eff_abs": N3 / N0,
+        "eff_rel": eff3,
+    }
+
+    for lbl, name in label_map.items():
+        Nlbl, efflbl = per_label_stats(mask3_full, labels, lbl, mask2_full)
+        cutflow["Afterpulse rejection"][f"N_{name}"] = Nlbl
+        cutflow["Afterpulse rejection"][f"eff_{name}"] = efflbl
+
+    data_final = data[mask3_full]
+    labels_final = labels[mask3_full]
+
+    return data_final, labels_final, cutflow
+
 #------ create templates ------
-def make_templates(data, bin_edges = np.linspace(0.05, 0.5, 11), align = True):
+def make_templates(data, bin_edges = np.linspace(0.05, 0.5, 11), target_idx=60, align = True):
     """
     make templates by averaging waveforms in bins of voltage
     paper: 10 bins (= 11 edges), in range 0.05V to 0.5V
@@ -175,7 +339,7 @@ def make_templates(data, bin_edges = np.linspace(0.05, 0.5, 11), align = True):
             templates[i] = data[mask].mean(axis=0)
 
     if align:
-        templates = align_templates(templates, target_idx=60)
+        templates = align_templates(templates, target_idx=target_idx)
 
     templates_norm = templates / templates.max(axis=1, keepdims=True)
 
@@ -500,7 +664,7 @@ def generate_pileup_sample(
 
 def genereate_synthetic_data(data, labels, bin_edges, statistics_n_g_pu, voltage_range, sigma_noise):
     """
-    Generate synthetic neutron, gammaa and pile up samples
+    Generate synthetic neutron, gammas and pile up samples
 
     Label convention
      1 -> neutrons
@@ -548,4 +712,3 @@ def genereate_synthetic_data(data, labels, bin_edges, statistics_n_g_pu, voltage
     print('time_shifts shape (pile-up only)', time_shifts_pileup.shape)
 
     return X, Y, time_shifts_pileup
-
