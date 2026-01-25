@@ -8,7 +8,6 @@ import generate_synthetic_data as gsd
 from collections import OrderedDict
 import pandas as pd
 
-
 import warnings
 warnings.filterwarnings("ignore") # for now
 

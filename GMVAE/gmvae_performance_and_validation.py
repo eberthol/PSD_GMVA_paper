@@ -764,7 +764,6 @@ def plot_all_separations(analyzer, Nbins=30, log=False):
             
     plt.tight_layout()
 
-
 #---------------------------------
 #      logs for wandb
 #---------------------------------
