@@ -45,7 +45,7 @@ class GMVAEAnalyzer:
         return_probs  = False,
         return_preds  = False,
         return_latent = False,
-        return_reco   = False,
+        return_reco   = False
     ):
         self.model.eval()
 
