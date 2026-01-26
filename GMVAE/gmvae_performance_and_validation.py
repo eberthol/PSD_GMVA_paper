@@ -51,17 +51,19 @@ class GMVAEAnalyzer:
         return_probs  = False,
         return_preds  = False,
         return_latent = False,
-        return_reco   = False
+        return_reco   = False,
+        return_logvar = False
     ):
         self.model.eval()
 
         out = {"y_true": []}
-        if return_x:      out["x"]      = []
-        if return_logits: out["logits"] = []
-        if return_probs:  out["probs"]  = []
-        if return_preds:  out["preds"]  = []
-        if return_latent: out["z"]      = []
-        if return_reco:   out["x_hat"]  = []
+        if return_x:      out["x"]       = []
+        if return_logits: out["logits"]  = []
+        if return_probs:  out["probs"]   = []
+        if return_preds:  out["preds"]   = []
+        if return_latent: out["mu"]      = []
+        if return_reco:   out["x_hat"]   = []
+        if return_logvar: out["logvar"]  = []
 
         with torch.no_grad():
             for x, y in self.dataloader:
@@ -89,10 +91,14 @@ class GMVAEAnalyzer:
                     out["preds"].append(preds.cpu().numpy())
 
                 if return_latent:
-                    out["z"].append(mu.cpu().numpy())
+                    out["mu"].append(mu.cpu().numpy())
 
                 if return_reco:
                     out["x_hat"].append(x_hat.cpu().numpy())
+                
+                if return_logvar:
+                    out["logvar"].append(logvar.cpu().numpy())
+
 
         for k in out:
             if k in ["y_true", "preds"]:
@@ -379,7 +385,7 @@ def plot_2d_pca(analyzer):
     )
 
     plot_2d_pca_from_arrays(
-        z=out["z"],
+        z=out["mu"],
         y=out["y_true"],
     )
 
@@ -458,7 +464,7 @@ def plot_3d_pca_projections(analyzer):
     )
 
     plot_3d_pca_projections_from_arrays(
-        z=out["z"],
+        z=out["mu"],
         y=out["y_true"],
     )
 
@@ -607,12 +613,12 @@ def plot_3d_pca(analyzer, interactive=False):
     )
     if interactive:
         plot_interactive_3d_pca_from_arrays(
-            z=out["z"],
+            z=out["mu"],
             y=out["y_true"],
         )
     else:
         plot_3d_pca_from_arrays(
-            z=out["z"],
+            z=out["mu"],
             y=out["y_true"],
         )
 
@@ -839,7 +845,7 @@ def log_clustering_quality(analyzer, step=None, sample_size=5000):
 
     # Collect latent vectors (mu) and true labels
     out = analyzer._collect(return_y=True, return_latent=True)
-    z = out["z"]        # High-dimensional latent space
+    z = out["mu"]        # High-dimensional latent space
     labels = out["y_true"]
 
     # Calculate mean Silhouette Score
@@ -860,8 +866,7 @@ def run_final_inference_report(analyzer, X_val, Y_val, dir="Inference"):
     and logs them to the 'Inference/' namespace in W&B.
     """
     print(f"🚀 Starting Final {dir} Evaluation...")
-    
-    # 1. Collect everything in one go (efficient)
+
     out = analyzer._collect(
         return_x=True,
         return_y=True, 
@@ -875,7 +880,7 @@ def run_final_inference_report(analyzer, X_val, Y_val, dir="Inference"):
     y_true = out["y_true"]
     y_pred = out["preds"]
     probs = out["probs"]
-    z = out["z"]
+    z = out["mu"]
     
     report_dict = {}
 
@@ -965,3 +970,53 @@ def run_final_inference_report(analyzer, X_val, Y_val, dir="Inference"):
     # Push all plots to W&B
     wandb.log(report_dict)
     print("✅ Final Report Sent to W&B.")
+
+
+
+
+#---------------------------------
+#      tests
+#---------------------------------
+
+def latent_entropy(logvar):
+    # logvar: (N, z_dim)
+    return 0.5 * np.sum(
+        np.log(2 * np.pi * np.e) + logvar,
+        axis=1
+    )  # (N,)
+
+def log_latent_entropy(logvar, y_true, prefix="val"):
+    ent = latent_entropy(logvar)
+    log_dict = {
+        f"{prefix}/latent_entropy/mean": float(ent.mean())
+    }
+    for k in np.unique(y_true):
+        log_dict[f"{prefix}/latent_entropy/class_{k}"] = float(
+            ent[y_true == k].mean()
+        )
+    wandb.log(log_dict)
+
+def run_test_report(analyzer, prefix="val"):
+    out = analyzer._collect(
+        return_x=True,
+        return_y=True, 
+        return_probs=True, 
+        return_preds=True, 
+        return_latent=True,
+        return_reco=True,
+        return_logvar=True
+    )
+    # x = out["x"]
+    # x_hat = out["x_hat"]
+    y_true = out["y_true"]
+    # y_pred = out["preds"]
+    # probs = out["probs"]
+    # mu = out["mu"]
+    logvar = out["logvar"]
+    
+
+    # --- latent entropy per class ---
+    log_latent_entropy(logvar, y_true, prefix)
+
+    # --- kl div. per class ---
+    # log_kl_per_class(kl_per_sample, y_true, prefix=)

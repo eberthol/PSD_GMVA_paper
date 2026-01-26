@@ -139,7 +139,7 @@ def gmv_loss(x, x_hat, logits, mu, logvar, labels=None, alpha=50):
 #       Training
 #---------------------------------
 
-def train_gmv(model, dataloader, optimizer, device, alpha=50):
+def train_gmv_epoch(model, dataloader, optimizer, alpha, device):
     model.train()
     total = 0
 
@@ -157,7 +157,7 @@ def train_gmv(model, dataloader, optimizer, device, alpha=50):
 
     return total / len(dataloader)
 
-def train_gmv_log(model, dataloader, optimizer, device, alpha=50):
+def train_gmv_epoch_log(model, dataloader, optimizer, alpha, device):
     """
     Same as train_gmv but also returns the individual components of the loss
     """
@@ -167,6 +167,7 @@ def train_gmv_log(model, dataloader, optimizer, device, alpha=50):
 
     for x, y in dataloader:
         x, y = x.to(device), y.to(device)
+        # print(x.shape) # check batch size
 
         optimizer.zero_grad()
         x_hat, logits, mu, logvar = model(x)
@@ -189,7 +190,7 @@ def train_gmv_log(model, dataloader, optimizer, device, alpha=50):
 #       Training and logging with W&B
 #----------------------------------------------------------
 
-def train_epoch_wandb(model, dataloader, optimizer, device, alpha=50):
+def train_epoch_wandb(model, dataloader, optimizer, device, alpha):
     """
      training function that logs metrics at every epoch
     """
@@ -231,18 +232,3 @@ def train_epoch_wandb(model, dataloader, optimizer, device, alpha=50):
         "Training/CE_loss": running_ce / n,
         "Training/accuracy": 100 * correct / total
     })
-
-import io
-from PIL import Image
-
-def fig_to_wandb_image(fig):
-    """
-    Converts a Matplotlib figure to a W&B-ready image 
-    with high DPI and no excess white space.
-    """
-    buf = io.BytesIO()
-    # bbox_inches='tight' is the magic part that removes the white margins
-    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.1, dpi=120)
-    buf.seek(0)
-    img = Image.open(buf)
-    return wandb.Image(img)
