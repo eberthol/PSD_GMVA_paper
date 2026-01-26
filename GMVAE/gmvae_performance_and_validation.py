@@ -2,7 +2,9 @@ import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-# from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm
+import matplotlib.cm as cm
+import matplotlib.patches as mpatches
 from tabulate import tabulate as tab
 # import types # to use dictionary as an object
 
@@ -29,6 +31,10 @@ import plotly.graph_objects as go # interactive plots
 import wandb
 import io
 from PIL import Image
+
+synthData_path = os.path.join('..', 'synthetic_data') 
+sys.path.append(synthData_path)
+import generate_synthetic_data as gsd
 
 
 class GMVAEAnalyzer:
@@ -110,6 +116,9 @@ def get_categories_dict():
 def get_names():
     names  = {'g': 'γ', 'n': 'n', 'p': 'Pile-up'}
     return names
+
+def normalize_to_peak_amplitude(pulses):
+    return pulses / np.max(pulses, axis=1, keepdims=True)
 
 #---------------------------------
 #       Loss Function
@@ -765,6 +774,43 @@ def plot_all_separations(analyzer, Nbins=30, log=False):
     plt.tight_layout()
 
 #---------------------------------
+#      PSD
+#---------------------------------
+def plot_psd(ax, X, Y, title, plot_range=[[7, 16], [0, 0.6]], pileup=False):
+    # Get data based on the labels passed (y_true or y_pred)
+    totals0, ttr0 = gsd.get_psd_integrals(X[Y == 0])
+    totals1, ttr1 = gsd.get_psd_integrals(X[Y == 1])
+    if pileup:
+        totals2, ttr2 = gsd.get_psd_integrals(X[Y == 2])
+
+    common_params = dict(bins=300, range=plot_range, norm=LogNorm(), cmin=1)
+
+    ax.hist2d(totals0, ttr0, cmap=cm.Reds, alpha=0.9, **common_params)
+    ax.hist2d(totals1, ttr1, cmap=cm.Blues, alpha=0.9, **common_params)
+    if pileup:
+        ax.hist2d(totals2, ttr2, cmap=cm.Greys, alpha=0.4, **common_params)
+    
+    ax.set_title(title, fontsize=16)
+    ax.set_xlabel('Total [V.samples]', fontsize=12)
+    ax.set_ylabel("Tail-to-total ratio", fontsize=12)
+
+def plot_psd_from_arrays(X_val, Y_true, y_pred, plot_range=[[0, 8], [0, 0.6]], pileup=False):
+
+    fig, axs = plt.subplots(1, 2, figsize=(14, 5))
+    plot_psd(axs[0], X_val, Y_true, "True Labels", plot_range, pileup)
+    plot_psd(axs[1], X_val, y_pred, "Predicted Labels", plot_range, pileup)
+
+    # Add one shared legend for the whole figure
+    red_patch = mpatches.Patch(color='red', alpha=1.0, label='Gammas (0)')
+    blue_patch = mpatches.Patch(color='blue', alpha=1.0, label='Neutrons (1)')
+    if pileup:
+        grey_patch = mpatches.Patch(color='grey', alpha=0.4, label='Pile-up (2)')
+        axs[1].legend(handles=[red_patch, blue_patch, grey_patch], loc='upper right')
+    else:
+        axs[1].legend(handles=[red_patch, blue_patch], loc='upper right')
+    return fig
+
+#---------------------------------
 #      logs for wandb
 #---------------------------------
 
@@ -808,7 +854,7 @@ def log_clustering_quality(analyzer, step=None, sample_size=5000):
                "epoch": step  })
     return score
 
-def run_final_inference_report(analyzer, dir="Inference"):
+def run_final_inference_report(analyzer, X_val, Y_val, dir="Inference"):
     """
     Performs full inference, generates all diagnostic plots, 
     and logs them to the 'Inference/' namespace in W&B.
@@ -848,9 +894,14 @@ def run_final_inference_report(analyzer, dir="Inference"):
     report_dict[f"{dir}_General/ROC"] = fig_to_wandb_image(fig_roc)
     plt.close(fig_roc)
 
+    # --- PSD ---
+    fig_psd = plot_psd_from_arrays(X_val, Y_val, y_pred, plot_range=[[0, 8], [0, 0.6]], pileup=True)
+    report_dict[f"{dir}_General/PSD"] = fig_to_wandb_image(fig_psd)
+    plt.close(fig_psd)
+
     # --- Reconstruction ---
     fig_reco = plot_random_reconstructions_from_arrays(x, x_hat, y_true, y_pred, num_samples=6, class_names=('γ', 'n', 'p'), seed=42)
-    report_dict[f"{dir}_Reconstruction/ROC"] = fig_to_wandb_image(fig_reco)
+    report_dict[f"{dir}_Reconstruction/reconstruction"] = fig_to_wandb_image(fig_reco)
     plt.close(fig_reco)
 
     # --- Separation Histograms  ---
@@ -906,7 +957,7 @@ def run_final_inference_report(analyzer, dir="Inference"):
     report_dict["Inference_Latent/t-SNE"] = fig_to_wandb_image(fig_lat)
     plt.close(fig_lat)
 
-    # --- 5. Log Summary Metrics ---
+    # --- Log Summary Metrics ---
     # These show up in the W&B run table (not a plot)
     score = silhouette_score(z, y_true, sample_size=Nsamples, random_state=42)
     wandb.run.summary[f"{dir}_final_silhouette_score"] = score
