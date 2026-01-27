@@ -73,83 +73,6 @@ def merge_cases_together(data, labels):
     return data_merged, labels_merged, neutrons_merged, gammas_merged
 
 #------ pulse selection ------
-def pulse_selection_tight(data, labels, voltage_range = (0.05, 0.5), late_start = 30, late_end = 200, afterpulse_frac = 0.08, peak_position_max = 80):
-    """
-    Tight selection for the templates
-
-    Cuts:
-     - peak_position_max: if the main peak is situated after this position then the event is rejected
-     - late_start, late_end: define a search window after the peak where to look for afterpulses
-     - afterpulse_frac: fraction of main peak to be cosidered as an afterpulse 
-
-    """
-
-    lines = []
-    headers = ['', 'count', 'percentage of total [%]']
-    Ntot = data.shape[0]
-    lines.append(['Ntot',  Ntot])
-
-    # from the paper: they average between 0.05 and 0.5 V 
-    min_threshold = voltage_range[0] 
-    max_threshold = voltage_range[1]
-
-    ## get rid of very late pulses
-    peak_idx = data.argmax(axis=1)
-    mask_peak_position= (peak_idx <= peak_position_max) 
-    data   = data[mask_peak_position]
-    labels = labels[mask_peak_position]
-
-    peak_idx = np.argmax(data, axis=1)
-    peak_val = np.max(data, axis=1)
-    mask_clean = np.ones(len(data), dtype=bool)
-
-    count_minThreshold = 0
-    count_maxThreshold = 0
-    count_switch = 0
-    count_afterPulses = 0
-    count_beforePulses = Ntot - data.shape[0]
-
-    for i in range(len(data)):
-        pidx = peak_idx[i]
-        pval = peak_val[i]
-
-        if pval < min_threshold:
-                count_minThreshold+=1
-                mask_clean[i] = False
-                continue
-        if pval > max_threshold:
-                max_threshold+=1
-                mask_clean[i] = False
-                continue
-        
-        # after-pulse / pile-up rejection
-        start = pidx + late_start
-        end   = min(pidx + late_end, data.shape[1])
-        if start >= end:
-            count_switch+=1
-            mask_clean[i] = False
-            continue
-        
-        late_max = np.max(data[i, start:end]) # get the maximum in the search window
-        if late_max > afterpulse_frac * pval:
-            count_afterPulses+=1
-            mask_clean[i] = False
-
-    lines.append(['count_minThreshold', count_minThreshold,  f'{count_minThreshold*100/Ntot:.1f}'])
-    lines.append(['count_maxThreshold', count_maxThreshold,  f'{count_maxThreshold*100/Ntot:.1f}'])
-    lines.append(['count_switch',       count_switch,        f'{count_switch*100/Ntot:.1f}'])
-    lines.append(['count_beforePulses', count_beforePulses,  f'{count_beforePulses*100/Ntot:.1f}'])
-    lines.append(['count_afterPulses',  count_afterPulses,   f'{count_afterPulses*100/Ntot:.1f}'])
-
-    data_clean = data[mask_clean]
-    labels_clean = labels[mask_clean]
-    Nsel = data_clean.shape[0]
-    lines.append(['---',  '---', '---'])
-    lines.append(['Nsel',  Nsel, f'{Nsel*100/Ntot:.1f}'])
-
-    table = tabulate(lines, headers=headers, tablefmt="GitHub")
-    print(table )
-    return data_clean, labels_clean
 
 def get_total_integral(data):
     total_start=2
@@ -223,92 +146,138 @@ def per_label_stats(mask, labels, label, ref_mask):
     eff_rel = N / Nref if Nref > 0 else 0
     return N, eff_rel
 
-def energy_selection_tight(data, labels, Vsamples_range, Vpeak_range, late_start, late_end, afterpulse_frac):
-
-    label_map={1: "neutron", 0: "gamma"}
-    cutflow = OrderedDict()
+def tight_selection(data, labels, Vsamples_range, Vpeak_range, peak_position_max, late_window, afterpulse_frac, return_cutflow=True):
+    """
+    Docstring for tight_selection
+    
+    :param Vsamples_range: energy cut - range of the integral of the pulse in volts per sample
+    :param Vpeak_range: amplitude cut - voltage range of the peak
+    :param peak_position_max: keep only pulses that occur before this position
+    :param late_window: min and max posion for the "late window" w.r.t peak position
+    :param afterpulse_frac: Description
+    :param return_cutflow: boolean
+    """
+    label_map = {1: "neutron", 0: "gamma"}
     N0 = len(data)
     mask0 = np.ones(N0, dtype=bool)
-    cutflow["Input"] = {
-        "N": N0,
-        "eff_abs": 1.0,
-        "eff_rel": 1.0,
-    }
-    # Per-class at input
+
+    cutflow = OrderedDict()
+    cutflow["Input"] = {"N": N0, "eff_abs": 1.0, "eff_rel": 1.0}
     for lbl, name in label_map.items():
         cutflow["Input"][f"N_{name}"] = np.sum(labels == lbl)
         cutflow["Input"][f"eff_{name}"] = 1.0
 
+    mask_full = mask0.copy()
+
+    # --------------------------------------------------
+    # Step 1: peak-position cut (optional)
+    # --------------------------------------------------
+    if peak_position_max is not None:
+        peak_idx = np.argmax(data, axis=1)
+        mask_pos = peak_idx <= peak_position_max
+        mask_full &= mask_pos
+
+        cutflow["Peak position cut"] = {
+            "N": int(mask_full.sum()),
+            "eff_abs": float(mask_full.sum() / N0),
+            "eff_rel": float(mask_pos[mask0].mean()),  # relative to previous (Input)
+        }
+        for lbl, name in label_map.items():
+            denom = np.sum((labels == lbl) & mask0)
+            num = np.sum((labels == lbl) & mask_full)
+            cutflow["Peak position cut"][f"N_{name}"] = int(num)
+            cutflow["Peak position cut"][f"eff_{name}"] = float(num / denom) if denom else 0.0
+
+    # Work on the selected subset so far
+    data_sel = data[mask_full]
+    labels_sel = labels[mask_full]
+
+    # --------------------------------------------------
+    # Step 2: energy / integral selection (optional)
+    # --------------------------------------------------
+    if Vsamples_range is not None:
+        pulse_integrals = get_total_integral(data_sel)
+        mask_E_local = (pulse_integrals >= Vsamples_range[0]) & (pulse_integrals <= Vsamples_range[1])
+
+        # update global mask
+        idx_global = np.where(mask_full)[0]
+        mask_E_full = np.zeros_like(mask_full)
+        mask_E_full[idx_global[mask_E_local]] = True
+        mask_full = mask_E_full
+
+        cutflow["Energy selection"] = {
+            "N": int(mask_full.sum()),
+            "eff_abs": float(mask_full.sum() / N0),
+            "eff_rel": float(mask_E_local.mean()),
+        }
+        for lbl, name in label_map.items():
+            denom = np.sum((labels == lbl) & (mask_E_full | (~mask_E_full)))  # == total per class
+            denom = np.sum(labels == lbl)
+            num = np.sum((labels == lbl) & mask_full)
+            cutflow["Energy selection"][f"N_{name}"] = int(num)
+            cutflow["Energy selection"][f"eff_{name}"] = float(num / denom) if denom else 0.0
+
+        data_sel = data[mask_full]
+        labels_sel = labels[mask_full]
     
     # --------------------------------------------------
-    # Step 1: energy selection
-    # --------------------------------------------------
-    pulse_intengrals = get_total_integral(data)
-    mask_E = (pulse_intengrals >= Vsamples_range[0]) & (pulse_intengrals <= Vsamples_range[1])
-    data_sel = data[mask_E]
-    labels_sel = labels[mask_E]
-
-    N1, eff1 = count_and_eff(mask_E, mask0)
-    cutflow["Energy selection"] = {
-        "N": N1,
-        "eff_abs": N1 / N0,
-        "eff_rel": eff1,
-    }
-    for lbl, name in label_map.items():
-        Nlbl, efflbl = per_label_stats(mask_E, labels, lbl, mask0)
-        cutflow["Energy selection"][f"N_{name}"] = Nlbl
-        cutflow["Energy selection"][f"eff_{name}"] = efflbl
-
-    # --------------------------------------------------
-    # Step 2: amplitude cut
+    # Step 3: amplitude cut
     # --------------------------------------------------
     Vpeak = np.max(data_sel, axis=1)
-    mask_amp = (Vpeak >= Vpeak_range[0]) & (Vpeak <= Vpeak_range[1])
-    data_sel = data_sel[mask_amp]
-    labels_sel = labels_sel[mask_amp]
-    
-    mask2_full = mask_E.copy()
-    mask2_full[mask_E] = mask_amp
-    N2, eff2 = count_and_eff(mask2_full, mask_E)
+    mask_amp_local = (Vpeak >= Vpeak_range[0]) & (Vpeak <= Vpeak_range[1])
+
+    idx_global = np.where(mask_full)[0]
+    mask_amp_full = np.zeros_like(mask_full)
+    mask_amp_full[idx_global[mask_amp_local]] = True
+    mask_full = mask_amp_full
+
     cutflow["Amplitude cut"] = {
-        "N": N2,
-        "eff_abs": N2 / N0,
-        "eff_rel": eff2,
+        "N": int(mask_full.sum()),
+        "eff_abs": float(mask_full.sum() / N0),
+        "eff_rel": float(mask_amp_local.mean()) if len(mask_amp_local) else 0.0,
     }
     for lbl, name in label_map.items():
-        Nlbl, efflbl = per_label_stats(mask2_full, labels, lbl, mask_E)
-        cutflow["Amplitude cut"][f"N_{name}"] = Nlbl
-        cutflow["Amplitude cut"][f"eff_{name}"] = efflbl
+        denom = np.sum(labels == lbl)
+        num = np.sum((labels == lbl) & mask_full)
+        cutflow["Amplitude cut"][f"N_{name}"] = int(num)
+        cutflow["Amplitude cut"][f"eff_{name}"] = float(num / denom) if denom else 0.0
+
+    data_sel = data[mask_full]
+    labels_sel = labels[mask_full]
 
     # --------------------------------------------------
-    # Step 3: afterpulse rejection
+    # Step 4: afterpulse rejection
     # --------------------------------------------------
-    mask3 = reject_afterpulses(
+    mask_after_local = reject_afterpulses(
         data_sel,
-        late_start=late_start,
-        late_end=late_end,
+        late_start=late_window[0],
+        late_end=late_window[1],
         afterpulse_frac=afterpulse_frac
     )
-    
-    mask3_full = mask2_full.copy()
-    mask3_full[mask2_full] = mask3
 
-    N3, eff3 = count_and_eff(mask3_full, mask2_full)
+    idx_global = np.where(mask_full)[0]
+    mask_after_full = np.zeros_like(mask_full)
+    mask_after_full[idx_global[mask_after_local]] = True
+    mask_full = mask_after_full
+
     cutflow["Afterpulse rejection"] = {
-        "N": N3,
-        "eff_abs": N3 / N0,
-        "eff_rel": eff3,
+        "N": int(mask_full.sum()),
+        "eff_abs": float(mask_full.sum() / N0),
+        "eff_rel": float(mask_after_local.mean()) if len(mask_after_local) else 0.0,
     }
-
     for lbl, name in label_map.items():
-        Nlbl, efflbl = per_label_stats(mask3_full, labels, lbl, mask2_full)
-        cutflow["Afterpulse rejection"][f"N_{name}"] = Nlbl
-        cutflow["Afterpulse rejection"][f"eff_{name}"] = efflbl
+        denom = np.sum(labels == lbl)
+        num = np.sum((labels == lbl) & mask_full)
+        cutflow["Afterpulse rejection"][f"N_{name}"] = int(num)
+        cutflow["Afterpulse rejection"][f"eff_{name}"] = float(num / denom) if denom else 0.0
+    
+    data_final = data[mask_full]
+    labels_final = labels[mask_full]
 
-    data_final = data[mask3_full]
-    labels_final = labels[mask3_full]
+    if return_cutflow:
+        return data_final, labels_final, cutflow
+    return data_final, labels_final
 
-    return data_final, labels_final, cutflow
 
 #------ create templates ------
 def make_templates(data, bin_edges = np.linspace(0.05, 0.5, 11), target_idx=60, align = True):
