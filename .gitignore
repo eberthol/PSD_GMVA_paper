@@ -12,3 +12,4 @@ Slides/
 wandb/
 WeightAndBisses_dummy.py
 .vscode/
+*_Debug.ipynb
