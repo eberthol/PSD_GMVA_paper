@@ -129,23 +129,6 @@ def cutflow_table(cutflow):
     df = pd.DataFrame(cutflow)
     return df
 
-def count_and_eff(mask, ref_mask):
-    """
-    mask: boolean mask at current step
-    ref_mask: reference mask (previous step or input)
-    """
-    N = np.sum(mask)
-    Nref = np.sum(ref_mask)
-    eff_rel = N / Nref if Nref > 0 else 0
-    return N, eff_rel
-
-def per_label_stats(mask, labels, label, ref_mask):
-    m = (labels == label)
-    N = np.sum(mask & m)
-    Nref = np.sum(ref_mask & m)
-    eff_rel = N / Nref if Nref > 0 else 0
-    return N, eff_rel
-
 def tight_selection(data, labels, Vsamples_range, Vpeak_range, peak_position_max, late_window, afterpulse_frac, return_cutflow=True):
     """
     Docstring for tight_selection
@@ -278,7 +261,6 @@ def tight_selection(data, labels, Vsamples_range, Vpeak_range, peak_position_max
         return data_final, labels_final, cutflow
     return data_final, labels_final
 
-
 #------ create templates ------
 def make_templates(data, bin_edges = np.linspace(0.05, 0.5, 11), target_idx=60, align = True):
     """
@@ -389,20 +371,6 @@ def interpolate_template(A, shapes, bin_centers):
 
     return pulse.copy()
 
-def get_templates(data, labels, bin_edges, Normalized=True):
-    data_clean, labels_clean = pulse_selection_tight(data, labels)
-    neutrons_clean = data_clean[labels_clean == 1]
-    gammas_clean = data_clean[labels_clean == 0]
-    print('\nneutrons clean (tight selection)')
-    bin_centers, templates_neutrons, templates_neutrons_norm = make_templates(neutrons_clean, bin_edges, align = True)
-    print('\ngammas clean (tight selection)')
-    _, templates_gammas, templates_gammas_norm = make_templates(gammas_clean, bin_edges, align = True)
-
-    if Normalized:
-        return templates_neutrons_norm, templates_gammas_norm, bin_centers
-    else:
-        return templates_neutrons, templates_gammas, bin_centers
-
 #------ generate neutron and gamma pulses from templates------
 def generate_synthetic_pulse(A, templates, bin_centers, sigma, Normalize=True):
     """
@@ -495,33 +463,102 @@ def get_psd_integrals(data, total_start=2, total_end=185, tail_start=9):
     return np.asarray(totals), np.asarray(ttr)
 
 #------ pileup ------
-def sample_dt_exponential(rate_hz, dt_sample_s, dt_max_samples):
+def sample_dt_exponential(rate_hz, dt_sampling_s, window_len_samples):
     """
     Sample inter-arrival time in ADC samples
 
     rate_hz      : average event rate (Hz)
-    dt_sample_s : sampling period (s)
-    dt_max_samples  : truncate to waveform length
+    dt_sampling_s : sampling period (s)
+    window_len_samples  : truncate to waveform length
 
     ATTENTION: 
-    if dt_max_samples is set at the legnth of the trigger window, then the distribution will peak at this value
+    if window_len_samples is set at the legnth of the trigger window, then the distribution will peak at this value
     it is not a bug, it is expected (we are clipping the distribution)
     QUESTION: what to do with these events?
         - they are really pile up (the pile up is over 2 trigger windows)
         - maybe we should throw them away?
         - maybe we should redraw a random number until it is inside the trigger window?
     """
-    rate_per_sample = rate_hz * dt_sample_s    
+    rate_per_sample = rate_hz * dt_sampling_s    
 
     if rate_per_sample <= 0:
         print('Sanity Check: Someting is fishy...')
-        return dt_max_samples
+        return window_len_samples
 
     # exponential in *samples*
     delta_samples = np.random.exponential(
         scale=1.0 / rate_per_sample
     )
-    return int(min(delta_samples, dt_max_samples))
+    return int(min(delta_samples, window_len_samples))
+
+def sample_dt_paper(
+    rate_hz: float,
+    dt_sampling_s: float, # in seconds per sample 
+    window_len_samples: int,
+    margin_samples: int = 0,
+    rng: np.random.Generator | None = None,
+) -> int:
+    """
+    Sample inter-pulse time shift (in ADC samples) using the paper's Eq. (2):
+        P(r,t) = exp(-r t) * (1 - exp(-r t)) = exp(-r t) - exp(-2 r t)
+
+    We interpret this as a *sampling distribution over t within the trigger window* [0, T),
+    normalize it on that interval, sample t by inverse CDF, then convert to integer samples.
+
+    Args:
+        rate_hz: detector count rate r [Hz]
+        dt_sampling_s: ADC sampling period [seconds per sample]
+        window_len_samples: total waveform length in samples
+        margin_samples: require dt <= window_len_samples - 1 - margin_samples
+                        (useful to ensure the 2nd pulse is not too close to the end)
+        rng: optional np.random.Generator for reproducibility
+
+    Returns:
+        dt_samples: integer shift in [0, max_shift]
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    if rate_hz <= 0:
+        # No meaningful rate; choose 0 shift or max shift depending on your preference
+        return 0
+
+    N = int(window_len_samples)
+    margin = int(margin_samples)
+    if N <= 1:
+        return 0
+
+    max_shift = N - 1 - margin
+    if max_shift < 0:
+        # margin bigger than window; fall back
+        return 0
+
+    r = float(rate_hz)
+    dt = float(dt_sampling_s)
+
+    # Allowed time interval length
+    T = (max_shift + 1) * dt  # shifts 0..max_shift correspond to times in [0, T)
+
+    # Inverse-CDF sampling for the normalized CDF:
+    #   F(t) = ((1 - exp(-r t)) / (1 - exp(-r T)))^2
+    u = rng.random()
+    a = 1.0 - np.exp(-r * T)             # (1 - e^{-rT})
+    y = np.sqrt(u)                       # sqrt(u)
+    inside = 1.0 - a * y                 # 1 - (1-e^{-rT})*sqrt(u)
+
+    # Numerical safety: keep inside in (0,1]
+    inside = np.clip(inside, 1e-15, 1.0)
+
+    t = -np.log(inside) / r              # sampled continuous time in [0,T)
+    dt_samples = int(np.floor(t / dt))   # convert to integer shift
+
+    # Clamp (should rarely be needed due to clipping + finite precision)
+    if dt_samples > max_shift:
+        dt_samples = max_shift
+    if dt_samples < 0:
+        dt_samples = 0
+
+    return dt_samples
 
 def shift_pulse(pulse, dt):
     """
@@ -533,8 +570,8 @@ def shift_pulse(pulse, dt):
     return shifted_pulse
 
 def generate_pileup_event(
-    A1, A2,
-    shapes1, shapes2,
+    A1, A2, # amlitudes of the two peaks
+    template1_normalized, template2_normalized, 
     bin_centers,
     noise_sigma, # Guassian noise
     time_shift, # shift in time (number of samples)
@@ -543,8 +580,8 @@ def generate_pileup_event(
     Generate a pile-up pulse from 2 pulses.
     """
 
-    p1 = interpolate_template(A1, shapes1, bin_centers)
-    p2 = interpolate_template(A2, shapes2, bin_centers)
+    p1 = interpolate_template(A1, template1_normalized, bin_centers)
+    p2 = interpolate_template(A2, template2_normalized, bin_centers)
 
     # --- time offset ---
     p2_shifted = shift_pulse(p2, time_shift)
@@ -559,32 +596,35 @@ def generate_pileup_event(
 
 def generate_random_pileup_event(
         neutron_templates_normalized, gamma_templates_normalized, bin_centers, # templates
-        A_min = 0.05, A_max = 0.5, # min and max for the pulse amplitudes
-        rate_hz = 1e6, dt_sample_s = 2e-9, dt_max_samples = 296, # time shift
+        peak_amplitude_range_V = [0.05, 0.5],
+        rate_hz = 1e6, dt_sampling_s = 2e-9, margin_samples = 0, 
         noise_sigma = 0., # Guassian noise
-        Normalize = True,
-        debug = False # print out some info
+        Normalize = True
         ):
+    
+    window_len_samples = neutron_templates_normalized.shape[1]
 
     # randomly chose between neutrons and gamma templates
     type1, type2  = np.random.choice(['n', 'g'], size=2) 
-    
     shapes1 = neutron_templates_normalized if type1 == 'n' else gamma_templates_normalized
     shapes2 = neutron_templates_normalized if type2 == 'n' else gamma_templates_normalized
 
     # --- random amplitude (uniform) ---
-    A1 = np.random.uniform(A_min, A_max)
-    A2 = np.random.uniform(A_min, A_max)
+    A1 = np.random.uniform(peak_amplitude_range_V[0], peak_amplitude_range_V[1])
+    A2 = np.random.uniform(peak_amplitude_range_V[0], peak_amplitude_range_V[1])
     p1 = interpolate_template(A1, shapes1, bin_centers)
     p2 = interpolate_template(A2, shapes2, bin_centers)
 
     # --- random time offset (exponential) ---
-    ## do not use time offset if it is superior to dt_max_samples
+    ## do not use time offset if it is superior to window_len_samples
     ## CAREFUL: it may be a mistake to do that
     ## 60 is the HARDCODED position of the first peak - need to make that cleaner
-    time_shift = 1e10
-    while time_shift >= dt_max_samples - 60:
-        time_shift = sample_dt_exponential(rate_hz, dt_sample_s, dt_max_samples)
+    # time_shift = 1e10
+    # while time_shift >= window_len_samples - 60:
+        # time_shift = sample_dt_exponential(rate_hz, dt_sampling_s, window_len_samples)
+
+    time_shift = sample_dt_paper(rate_hz, dt_sampling_s, window_len_samples, margin_samples, rng=None)
+        
     p2_shifted = shift_pulse(p2, time_shift)
 
     # --- add pulses ---
@@ -597,19 +637,13 @@ def generate_random_pileup_event(
     if Normalize:
         pileup = pileup / np.max(pileup)
 
-    # --- DEBUG ---
-    if debug:
-        print(f'pulse 1: {type1}, amplitude = {A1}')
-        print(f'pulse 2: {type2}, amplitude = {A2}')
-        print(f'time_shift = {time_shift} samples')
-
     return pileup, time_shift
 
 def generate_pileup_sample(
     Npulses, # how many events to generate
     neutron_templates_normalized, gamma_templates_normalized, bin_centers, # templates
-    A_min = 0.05, A_max = 0.5, # min and max for the pulse amplitudes
-    rate_hz = 1e6, dt_sample_s = 2e-9, dt_max_samples = 296, # time shift
+    peak_amplitude_range_V = [0.05, 0.5],
+    rate_hz = 1e6, dt_sampling_s = 2e-9, margin_samples = 0, 
     noise_sigma = 0., # Guassian noise 
     Normalize=True
     ):
@@ -621,62 +655,10 @@ def generate_pileup_sample(
     for i in range(Npulses):
         X[i], time_shifts[i] = generate_random_pileup_event(
             neutron_templates_normalized, gamma_templates_normalized, bin_centers,
-            A_min, A_max, 
-            rate_hz, dt_sample_s, dt_max_samples, 
+            peak_amplitude_range_V, 
+            rate_hz, dt_sampling_s, margin_samples,  
             noise_sigma, 
             Normalize
         )
     return X, time_shifts
 
-#------ generate training/test datasets ------
-
-def genereate_synthetic_data(data, labels, bin_edges, statistics_n_g_pu, voltage_range, sigma_noise):
-    """
-    Generate synthetic neutron, gammas and pile up samples
-
-    Label convention
-     1 -> neutrons
-     0 -> gammas
-     2 -> pile-up
-    """
-    templates_neutrons_norm, templates_gammas_norm, bin_centers = get_templates(data, labels, bin_edges, Normalized=True)
-    templates_norm_n_g = [templates_neutrons_norm, templates_gammas_norm]
-
-    X, Y = [], []
-    print(f'NEUTRONS: {statistics_n_g_pu[0]}')
-    neutrons_synth, _ = generate_sample(templates = templates_norm_n_g[0], 
-                                 bin_centers =  bin_centers, 
-                                 Npulses = statistics_n_g_pu[0], 
-                                 sigma = sigma_noise,
-                                 A_min=voltage_range[0], A_max=voltage_range[1],
-                                 Normalize=True) # must be true for ML
-    neutrons_label = np.ones(neutrons_synth.shape[0])
-
-    print(f'GAMMAS: {statistics_n_g_pu[1]}')
-    gammas_synth, _ = generate_sample(templates = templates_norm_n_g[1], 
-                                    bin_centers =  bin_centers, 
-                                    Npulses = statistics_n_g_pu[1], 
-                                    sigma = sigma_noise,
-                                    A_min=voltage_range[0], A_max=voltage_range[1],
-                                    Normalize=True) # must be true for ML
-    gammas_label = np.zeros(gammas_synth.shape[0])
-
-    print(f'PILEUP: {statistics_n_g_pu[2]}')
-    piluep_synth, time_shifts_pileup = generate_pileup_sample(
-                                                Npulses = statistics_n_g_pu[2],
-                                                neutron_templates_normalized = templates_norm_n_g[0], 
-                                                gamma_templates_normalized = templates_norm_n_g[1], 
-                                                bin_centers = bin_centers,
-                                                A_min = voltage_range[0], A_max = voltage_range[1], 
-                                                noise_sigma = sigma_noise,
-                                                Normalize=True # must be true for ML
-                                                )
-    piluep_label = np.ones(piluep_synth.shape[0])*2
-
-    X = np.concatenate((neutrons_synth, gammas_synth, piluep_synth), axis=0)
-    Y = np.concatenate((neutrons_label, gammas_label, piluep_label), axis=0)
-    print('\nX shape', X.shape)
-    print('sanity check, Y shape', Y.shape)
-    print('time_shifts shape (pile-up only)', time_shifts_pileup.shape)
-
-    return X, Y, time_shifts_pileup
