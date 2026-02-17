@@ -13,3 +13,9 @@ wandb/
 WeightAndBisses_dummy.py
 .vscode/
 *_Debug.ipynb
+*.pt
+Brittany/
+DebugParser/
+papers/
+GMVAE/to_keep/
+synthetic_data/trash/
