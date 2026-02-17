@@ -898,11 +898,8 @@ def train_wandb(
                 "train/pred_acc": tr.get("pred_acc", np.nan),
                 "train/pred_conf": tr.get("pred_conf", np.nan),
                 "train/pred_entropy": tr.get("pred_entropy", np.nan),
-                "train/n_pred_used": tr.get("n_pred_used", 0),
-
-                "hp/beta_z": beta_z,
-                "hp/beta_y": beta_y,
-                "hp/omega": omega
+                "train/n_pred_used": tr.get("n_pred_used", 0)
+                
             }
 
             if va is not None:
