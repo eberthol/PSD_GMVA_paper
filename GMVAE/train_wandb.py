@@ -451,21 +451,9 @@ def main(config: dict):
     X_train, Y_train = get_data(noise_level, Case=Case, pathToDatasets=pathToDatasets, validation=False)
     X_val, Y_val     = get_data(noise_level, Case=Case, pathToDatasets=pathToDatasets, validation=True)
 
-    # IMPORTANT: normalize VAL the same way you trained.
-    # If you trained on normalized pulses, normalize train too.
+    # IMPORTANT: train and val are not normalized -> the normalization is done here
     X_train_norm = normalize_to_peak_amplitude(X_train)
     X_val_norm   = normalize_to_peak_amplitude(X_val)
-
-    if DEBUG:
-        print(X_train.shape, X_val.shape, X_train_norm.shape, X_val_norm.shape)
-        print("\ntrain counts")
-        vals, counts = np.unique(Y_train, return_counts=True)
-        for i in range(len(vals)):
-            print(int(vals[i]), counts[i])
-        print("\nval counts")
-        vals, counts = np.unique(Y_val, return_counts=True)
-        for i in range(len(vals)):
-            print(int(vals[i]), counts[i])
 
     class PulseDataset(Dataset):
         def __init__(self, X: np.ndarray, y: np.ndarray | None = None):
