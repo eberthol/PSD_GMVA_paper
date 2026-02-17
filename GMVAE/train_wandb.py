@@ -85,7 +85,7 @@ def collect_latent_mu(model, loader, device, max_points=5000):
 
 
 @torch.no_grad()
-def recon_grid_per_label(
+def reco_grid_per_label(
     model,
     loader,
     device,
@@ -96,7 +96,7 @@ def recon_grid_per_label(
 ):
     """
     Collect first n_per_label examples per true label (works with label-ordered val loader),
-    run recon, and plot grid with true/pred/conf.
+    run reco, and plot grid with true/pred/conf.
     """
     model.eval()
     xs_by = {k: [] for k in range(K)}
@@ -153,7 +153,7 @@ def recon_grid_per_label(
 
 
 @torch.no_grad()
-def recon_error_profile_fig(model, loader, device, K: int, class_names=None):
+def reco_error_profile_fig(model, loader, device, K: int, class_names=None):
     """
     Mean |x_hat-x| vs time per label, averaged per sample.
     """
@@ -372,11 +372,11 @@ def log_full_dashboard(model, val_loader_metrics, val_loader_viz, device, K, cla
     plt.grid(True, axis="y", alpha=0.3)
     wandb.log({"dashboard/qy_mean_probs": fig_to_wandb_image(fig, "Mean q(y|x) probs")}, step=step)
 
-    fig_recon = recon_grid_per_label(model, val_loader_metrics, device, K, n_per_label=3, class_names=class_names)
-    wandb.log({"dashboard/recon_examples_per_label": fig_to_wandb_image(fig_recon, "Recon per label")}, step=step)
+    fig_reco = reco_grid_per_label(model, val_loader_metrics, device, K, n_per_label=3, class_names=class_names)
+    wandb.log({"dashboard/reco_examples_per_label": fig_to_wandb_image(fig_reco, "reco per label")}, step=step)
 
-    fig_err = recon_error_profile_fig(model, val_loader_metrics, device, K, class_names=class_names)
-    wandb.log({"dashboard/recon_error_profile": fig_to_wandb_image(fig_err, "Mean abs error vs time")}, step=step)
+    fig_err = reco_error_profile_fig(model, val_loader_metrics, device, K, class_names=class_names)
+    wandb.log({"dashboard/reco_error_profile": fig_to_wandb_image(fig_err, "Mean abs error vs time")}, step=step)
 
     mus, comps_viz, ytrue_viz = collect_latent_mu(model, val_loader_viz, device=device, max_points=5000)
 
@@ -495,7 +495,7 @@ def main(config: dict):
     L = X_train.shape[1]
     z_dim = (L // 8) if (config["z_dim"] is None) else int(config["z_dim"])
 
-    model = gmvae.GMVAE(L=L, z_dim=z_dim, n_classes=config["K"], recon_loss=config["recon_loss"]).to(device)
+    model = gmvae.GMVAE(L=L, z_dim=z_dim, n_classes=config["K"], reco_loss=config["reco_loss"]).to(device)
     if DEBUG:
         print("L:", L, "z_dim:", z_dim, "K:", config["K"])
         print()
@@ -548,7 +548,7 @@ if __name__ == "__main__":
         omega=50.0,
         label_mode="full",
         unlabeled_value=-1,
-        recon_loss="mse",
+        reco_loss="mse",
         z_dim=None,
         dashboard_every=2,
         class_names=["gamma", "neutron", "pileup"],

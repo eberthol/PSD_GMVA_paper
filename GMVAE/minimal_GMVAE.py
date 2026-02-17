@@ -5,14 +5,14 @@
 #
 # Assumptions:
 #   x is a 1D waveform of length L (float32)
-#   If you use BCE, x must be in [0, 1]. Otherwise set recon_loss="mse".
+#   If you use BCE, x must be in [0, 1]. Otherwise set reco_loss="mse".
 #
 # Usage:
-#   model = GMVAE(L=296, z_dim=37, n_classes=3, recon_loss="bce")
+#   model = GMVAE(L=296, z_dim=37, n_classes=3, reco_loss="bce")
 #   train(model, train_loader, val_loader, epochs=50)
 
 from dataclasses import dataclass
-from typing import Optional, Literal, Dict, Any
+from typing import Optional, Literal, Dict, Any, Tuple
 
 import torch
 import torch.nn as nn
@@ -162,7 +162,7 @@ class GaussianMixturePrior(nn.Module):
 @dataclass
 class ELBOTerms:
     # per-sample terms (shape [B])
-    recon: torch.Tensor
+    reco: torch.Tensor
     kl_z: torch.Tensor
     kl_y: torch.Tensor
 
@@ -173,19 +173,19 @@ class GMVAE(nn.Module):
         L: int,
         z_dim: int,
         n_classes: int,
-        recon_loss: Literal["bce", "mse"] = "bce", 
+        reco_loss: Literal["bce", "mse"] = "bce", 
         # BCE: Bernouilli likelihood -> requires inputs in [0, 1] (i.e. sigmoid)
         # MSE: Gaussian likelihood -> no need for bounded inputs
     ):
         super().__init__()
-        use_sigmoid = (recon_loss == "bce")
+        use_sigmoid = (reco_loss == "bce")
         self.encoder = Encoder(L=L, z_dim=z_dim, n_classes=n_classes)
         self.decoder = Decoder(L=L, z_dim=z_dim, use_sigmoid=use_sigmoid)
         self.prior = GaussianMixturePrior(n_classes=n_classes, z_dim=z_dim)
 
-        if recon_loss not in ("bce", "mse"):
-            raise ValueError("recon_loss must be 'bce' or 'mse'")
-        self.recon_loss = recon_loss
+        if reco_loss not in ("bce", "mse"):
+            raise ValueError("reco_loss must be 'bce' or 'mse'")
+        self.reco_loss = reco_loss
         self.L = L
         self.z_dim = z_dim
         self.n_classes = n_classes
@@ -206,12 +206,12 @@ class GMVAE(nn.Module):
         logvar_z = out["logvar_z"]  # [B, D]
         B = x.shape[0]
 
-        # Reconstruction term 
-        if self.recon_loss == "bce":
+        # reconstruction term 
+        if self.reco_loss == "bce":
             # BCE expects probabilities; x should be in [0,1] (x_hat already sigmoid)
-            recon = F.binary_cross_entropy(x_hat, x, reduction="none").sum(dim=-1)  # [B]
+            reco = F.binary_cross_entropy(x_hat, x, reduction="none").sum(dim=-1)  # [B]
         else:
-            recon = F.mse_loss(x_hat, x, reduction="none").sum(dim=-1)  # [B]
+            reco = F.mse_loss(x_hat, x, reduction="none").sum(dim=-1)  # [B]
 
         # KL_z: expected KL to mixture components under q(y|x)
         prior = self.prior()
@@ -235,7 +235,7 @@ class GMVAE(nn.Module):
         kl_y = kl_categorical(q_y, p_y)      # [B]
 
         # return terms of the loss function
-        return ELBOTerms(recon=recon, kl_z=kl_z, kl_y=kl_y)
+        return ELBOTerms(reco=reco, kl_z=kl_z, kl_y=kl_y)
 
 # ---------------------------
 # Loss Funcion
@@ -243,7 +243,7 @@ class GMVAE(nn.Module):
 @dataclass
 class LossOutput:
     loss: torch.Tensor
-    recon: torch.Tensor
+    reco: torch.Tensor
     kl_z: torch.Tensor
     kl_y: torch.Tensor
 
@@ -256,8 +256,8 @@ def compute_loss(
     Assemble final scalar loss from per-sample ELBO terms.
 
     beta_z: Scales how strongly you force the latent Gaussian q(z|x) to look like the component prior p(z|y).
-	    •	Larger beta_z → tighter, more “prior-shaped” latent space, sometimes better clustering but can hurt reconstruction (posterior collapse if too strong).
-	    •	Smaller beta_z → better recon, but latent space can get messy / less clustered.
+	    •	Larger beta_z → tighter, more “prior-shaped” latent space, sometimes better clustering but can hurt recostruction (posterior collapse if too strong).
+	    •	Smaller beta_z → better reco, but latent space can get messy / less clustered.
     
     beta_y: Scales the categorical KL term
     	•	Larger beta_y → discourages component collapse and encourages using components in line with p(y) (often helps mixture usage).
@@ -268,11 +268,11 @@ def compute_loss(
       + gamma * triplet_loss
       + KL warmup schedules, etc.
     """
-    elbo_per_sample = terms.recon + beta_z * terms.kl_z + beta_y * terms.kl_y
+    elbo_per_sample = terms.reco + beta_z * terms.kl_z + beta_y * terms.kl_y
     loss = elbo_per_sample.mean()
     return LossOutput(
         loss=loss,
-        recon=terms.recon.mean(),
+        reco=terms.reco.mean(),
         kl_z=terms.kl_z.mean(),
         kl_y=terms.kl_y.mean(),
     )
@@ -383,13 +383,13 @@ def train_one_epoch(
       - (x, y)  where y is [B] long tensor
 
     Returns epoch averages for:
-      loss_total, loss_elbo, recon, kl_z, kl_y, label_loss, label_acc, n_labeled_used
+      loss_total, loss_elbo, reco, kl_z, kl_y, label_loss, label_acc, n_labeled_used
     """
     model.train()
     totals = {
         "loss_total": 0.0,
         "loss_elbo": 0.0,
-        "recon": 0.0,
+        "reco": 0.0,
         "kl_z": 0.0,
         "kl_y": 0.0,
         "label_loss": 0.0,
@@ -397,6 +397,13 @@ def train_one_epoch(
         "n_labeled_used": 0.0,  # total labeled samples used across epoch
     }
     n_samples = 0
+
+    totals_pred = {
+        "pred_acc_sum": 0.0,     # weighted by n_used
+        "pred_conf_sum": 0.0,    # weighted by n_used
+        "pred_ent_sum": 0.0,     # weighted by n_used
+        "n_pred_used": 0.0,
+    }
 
     for batch in loader:
         # Unpack batch
@@ -416,6 +423,20 @@ def train_one_epoch(
         out = model(x)
         terms = model.elbo_terms(x, out)
         elbo_out = compute_loss(terms, beta_z=beta_z, beta_y=beta_y)
+
+        # --- prediction diagnostics (DOES NOT affect training) ---
+        pstats = _prediction_stats_from_logits(
+            logits_y=out["logits_y"].detach(),
+            y=y.detach() if y is not None else None,
+            mode=label_mode,                     # uses your current mode for masking unlabeled
+            unlabeled_value=unlabeled_value,
+        )
+        if pstats["n_used"] > 0:
+            n_used = pstats["n_used"]
+            totals_pred["pred_acc_sum"]  += pstats["acc"] * n_used
+            totals_pred["pred_conf_sum"] += pstats["conf_mean"] * n_used
+            totals_pred["pred_ent_sum"]  += pstats["entropy_mean"] * n_used
+            totals_pred["n_pred_used"]   += n_used
 
         # Optional label loss
         use_label = (omega != 0.0) and (label_mode != "off")
@@ -441,7 +462,7 @@ def train_one_epoch(
         # Accumulate (sample-weighted for ELBO metrics)
         totals["loss_total"] += float(total_loss.item()) * bs
         totals["loss_elbo"] += float(elbo_out.loss.item()) * bs
-        totals["recon"] += float(elbo_out.recon.item()) * bs
+        totals["reco"] += float(elbo_out.reco.item()) * bs
         totals["kl_z"] += float(elbo_out.kl_z.item()) * bs
         totals["kl_y"] += float(elbo_out.kl_y.item()) * bs
 
@@ -455,7 +476,7 @@ def train_one_epoch(
     out_stats = {
         "loss_total": totals["loss_total"] / max(n_samples, 1),
         "loss_elbo": totals["loss_elbo"] / max(n_samples, 1),
-        "recon": totals["recon"] / max(n_samples, 1),
+        "reco": totals["reco"] / max(n_samples, 1),
         "kl_z": totals["kl_z"] / max(n_samples, 1),
         "kl_y": totals["kl_y"] / max(n_samples, 1),
     }
@@ -471,10 +492,27 @@ def train_one_epoch(
         out_stats["label_acc"] = float("nan")
         out_stats["n_labeled_used"] = 0.0
 
+    # --- add prediction diagnostics to output ---
+    npu = totals_pred["n_pred_used"]
+    if npu > 0:
+        out_stats["pred_acc"] = totals_pred["pred_acc_sum"] / npu
+        out_stats["pred_conf"] = totals_pred["pred_conf_sum"] / npu
+        out_stats["pred_entropy"] = totals_pred["pred_ent_sum"] / npu
+        out_stats["n_pred_used"] = npu
+    else:
+        out_stats["pred_acc"] = float("nan")
+        out_stats["pred_conf"] = float("nan")
+        out_stats["pred_entropy"] = float("nan")
+        out_stats["n_pred_used"] = 0.0
+
     return out_stats
 
+# ---------------------------
+# Evaluation
+# ---------------------------
+
 @torch.no_grad()
-def evaluate(
+def evaluate_losses(
     model,
     loader,
     device: torch.device,
@@ -485,32 +523,37 @@ def evaluate(
     unlabeled_value: int = -1,
 ) -> Dict[str, float]:
     """
-    Evaluate one epoch.
-
-    Supports:
-      - Pure ELBO: omega=0.0 OR label_mode="off"
-      - Semi-supervised: omega>0 and label_mode="semi"
-      - Fully supervised: omega>0 and label_mode="full"
-
-    Expected batches:
-      - (x,) or x
-      - (x, y)
+    Validation under the TRAINING OBJECTIVE:
+      loss_total = ELBO + omega * label_loss (optional)
+      ELBO = reco + beta_z * kl_z + beta_y * kl_y
 
     Returns averages for:
-      loss_total, loss_elbo, recon, kl_z, kl_y, label_loss, label_acc, n_labeled_used
+      loss_total, loss_elbo, reco, kl_z, kl_y, label_loss, label_acc, n_labeled_used
+    PLUS (if y available):
+      pred_acc, pred_conf, pred_entropy, n_pred_used
     """
     model.eval()
-    totals = {
-        "loss_total": 0.0,
-        "loss_elbo": 0.0,
-        "recon": 0.0,
-        "kl_z": 0.0,
-        "kl_y": 0.0,
-        "label_loss": 0.0,
-        "label_acc_sum": 0.0,   # weighted by n_used
-        "n_labeled_used": 0.0,
-    }
+
+    totals = dict(
+        loss_total=0.0,
+        loss_elbo=0.0,
+        reco=0.0,
+        kl_z=0.0,
+        kl_y=0.0,
+        label_loss=0.0,        # summed over labeled examples
+        label_acc_sum=0.0,     # summed over labeled examples
+        n_labeled_used=0.0,
+    )
     n_samples = 0
+
+    totals_pred = dict(
+        pred_acc_sum=0.0,      # weighted by n_used
+        pred_conf_sum=0.0,     # weighted by n_used
+        pred_ent_sum=0.0,      # weighted by n_used
+        n_pred_used=0.0,
+    )
+
+    use_label = (omega != 0.0) and (label_mode != "off")
 
     for batch in loader:
         if isinstance(batch, (tuple, list)):
@@ -525,40 +568,59 @@ def evaluate(
 
         out = model(x)
         terms = model.elbo_terms(x, out)
-        elbo_out = compute_loss(terms, beta_z=beta_z, beta_y=beta_y)
+        elbo_out = compute_loss(terms, beta_z=beta_z, beta_y=beta_y)  # per-batch mean scalars
 
-        use_label = (omega != 0.0) and (label_mode != "off")
+        # --- prediction diagnostics (no effect on loss) ---
+        # In semi mode: ignore unlabeled_value
+        # Otherwise: use labels if provided (still ignores unlabeled_value if present)
+        diag_mode = "semi" if label_mode == "semi" else "off"
+        pstats = _prediction_stats_from_logits(
+            logits_y=out["logits_y"],
+            y=y,
+            mode=diag_mode,
+            unlabeled_value=unlabeled_value,
+        )
+        if pstats["n_used"] > 0:
+            n_used = pstats["n_used"]
+            totals_pred["pred_acc_sum"]  += pstats["acc"] * n_used
+            totals_pred["pred_conf_sum"] += pstats["conf_mean"] * n_used
+            totals_pred["pred_ent_sum"]  += pstats["entropy_mean"] * n_used
+            totals_pred["n_pred_used"]   += n_used
+
+        # total loss scalar (batch mean)
+        total_loss = elbo_out.loss
+        lab = None
         if use_label:
             lab = compute_label_loss(
                 logits_y=out["logits_y"],
                 y=y,
                 mode=label_mode,
                 unlabeled_value=unlabeled_value,
-                reduction="mean",
+                reduction="mean",  # mean over used labels (or 0 if none used)
             )
-            total_loss = elbo_out.loss + omega * lab.loss
-        else:
-            lab = None
-            total_loss = elbo_out.loss
+            total_loss = total_loss + omega * lab.loss
 
         bs = x.size(0)
         n_samples += bs
 
+        # multiply by bs to accumulate per-sample averages across batches
         totals["loss_total"] += float(total_loss.item()) * bs
         totals["loss_elbo"] += float(elbo_out.loss.item()) * bs
-        totals["recon"] += float(elbo_out.recon.item()) * bs
+        totals["reco"] += float(elbo_out.reco.item()) * bs
         totals["kl_z"] += float(elbo_out.kl_z.item()) * bs
         totals["kl_y"] += float(elbo_out.kl_y.item()) * bs
 
         if lab is not None and lab.n_used > 0:
-            totals["label_loss"] += float(lab.loss.item()) * lab.n_used
-            totals["label_acc_sum"] += float(lab.acc) * lab.n_used if lab.acc is not None else 0.0
+            # lab.loss is mean over n_used, so sum = mean * n_used
+            totals["label_loss"] += float(lab.loss.item()) * float(lab.n_used)
+            if lab.acc is not None:
+                totals["label_acc_sum"] += float(lab.acc) * float(lab.n_used)
             totals["n_labeled_used"] += float(lab.n_used)
 
     out_stats = {
         "loss_total": totals["loss_total"] / max(n_samples, 1),
         "loss_elbo": totals["loss_elbo"] / max(n_samples, 1),
-        "recon": totals["recon"] / max(n_samples, 1),
+        "reco": totals["reco"] / max(n_samples, 1),
         "kl_z": totals["kl_z"] / max(n_samples, 1),
         "kl_y": totals["kl_y"] / max(n_samples, 1),
     }
@@ -573,7 +635,123 @@ def evaluate(
         out_stats["label_acc"] = float("nan")
         out_stats["n_labeled_used"] = 0.0
 
+    # --- finalize prediction diagnostics ---
+    npu = totals_pred["n_pred_used"]
+    if npu > 0:
+        out_stats["pred_acc"] = totals_pred["pred_acc_sum"] / npu
+        out_stats["pred_conf"] = totals_pred["pred_conf_sum"] / npu
+        out_stats["pred_entropy"] = totals_pred["pred_ent_sum"] / npu
+        out_stats["n_pred_used"] = npu
+    else:
+        out_stats["pred_acc"] = float("nan")
+        out_stats["pred_conf"] = float("nan")
+        out_stats["pred_entropy"] = float("nan")
+        out_stats["n_pred_used"] = 0.0
+
     return out_stats
+
+@torch.no_grad()
+def evaluate_predictions(model, loader, device: torch.device) -> Dict[str, object]:
+    model.eval()
+    preds, confs, trues = [], [], []
+    ent_sum = 0.0
+    n_ent = 0
+
+    eps = 1e-10
+
+    for batch in loader:
+        if isinstance(batch, (tuple, list)):
+            x = batch[0]
+            y = batch[1] if len(batch) > 1 else None
+        else:
+            x, y = batch, None
+
+        x = x.to(device)
+        enc = model.encoder(x)
+        qy = enc["q_y"].detach().cpu()                 # [B,K]
+
+        pred = torch.argmax(qy, dim=-1)
+        conf = torch.max(qy, dim=-1).values
+        ent = -(qy.clamp_min(eps) * torch.log(qy.clamp_min(eps))).sum(dim=-1)  # [B]
+
+        preds.append(pred)
+        confs.append(conf)
+        ent_sum += float(ent.sum().item())
+        n_ent += int(ent.numel())
+
+        if y is not None:
+            trues.append(y.detach().cpu().long())
+
+    y_pred = torch.cat(preds, dim=0) if preds else torch.empty(0, dtype=torch.long)
+    conf = torch.cat(confs, dim=0) if confs else torch.empty(0, dtype=torch.float32)
+    y_true = torch.cat(trues, dim=0) if trues else None
+
+    pred_conf = float(conf.mean().item()) if conf.numel() > 0 else float("nan")
+    pred_entropy = float(ent_sum / max(n_ent, 1))
+
+    if y_true is not None and y_true.numel() > 0:
+        pred_acc = float((y_pred == y_true).float().mean().item())
+        n_used = int(y_true.numel())
+    else:
+        pred_acc = float("nan")
+        n_used = 0
+
+    return {
+        "y_pred": y_pred,
+        "conf": conf,
+        "y_true": y_true,
+        "pred_acc": pred_acc,
+        "pred_conf": pred_conf,
+        "pred_entropy": pred_entropy,
+        "n_pred_used": n_used,
+    }
+
+
+# ---------------------------
+# Evaluation wrapper
+# ---------------------------
+@torch.no_grad()
+def evaluate_all(
+    model,
+    loader_metrics,
+    loader_preds=None,
+    device: torch.device = None,
+    beta_z: float = 1.0,
+    beta_y: float = 1.0,
+    omega: float = 0.0,
+    label_mode: Literal["semi", "full", "off"] = "off",
+    unlabeled_value: int = -1,
+) -> Dict[str, object]:
+    """
+    Runs:
+      - evaluate_losses on loader_metrics
+      - evaluate_predictions on loader_preds (defaults to loader_metrics)
+    """
+    if device is None:
+        device = next(model.parameters()).device
+    if loader_preds is None:
+        loader_preds = loader_metrics
+
+    losses = evaluate_losses(
+        model=model,
+        loader=loader_metrics,
+        device=device,
+        beta_z=beta_z,
+        beta_y=beta_y,
+        omega=omega,
+        label_mode=label_mode,
+        unlabeled_value=unlabeled_value,
+    )
+    preds = evaluate_predictions(
+        model=model,
+        loader=loader_preds,
+        device=device,
+    )
+    return {**losses, **preds}
+
+# ---------------------------
+# Training loop (with wandb)
+# ---------------------------
 
 def train_wandb(
     model,
@@ -638,11 +816,11 @@ def train_wandb(
         if val_loader is not None:
             return (
                 "epoch | "
-                "train_total train_elbo  recon   klz    kly   lab_loss lab_acc n_lab || "
-                "val_total   val_elbo    recon   klz    kly   lab_loss lab_acc n_lab"
+                "train_total train_elbo  reco   klz    kly   lab_loss lab_acc n_lab || "
+                "val_total   val_elbo    reco   klz    kly   lab_loss lab_acc n_lab"
             )
         else:
-            return "epoch | train_total train_elbo recon klz kly lab_loss lab_acc n_lab"
+            return "epoch | train_total train_elbo reco klz kly lab_loss lab_acc n_lab"
     print(_hdr())
 
     # infer K if not given
@@ -664,9 +842,11 @@ def train_wandb(
 
         va = None
         if val_loader is not None:
-            va = evaluate(
+            # evaluate_all returns loss stats + y_pred/conf/y_true/acc
+            va = evaluate_all(
                 model=model,
-                loader=val_loader,
+                loader_metrics=val_loader,         # shuffle=False recommended
+                loader_preds=val_loader,           # use same loader for pred metrics/confusions
                 device=device_t,
                 beta_z=beta_z,
                 beta_y=beta_y,
@@ -682,17 +862,17 @@ def train_wandb(
             if va is not None:
                 print(
                     f"{epoch:5d} | "
-                    f"{tr['loss_total']:10.4f} {tr['loss_elbo']:10.4f} {tr['recon']:6.3f} "
+                    f"{tr['loss_total']:10.4f} {tr['loss_elbo']:10.4f} {tr['reco']:6.3f} "
                     f"{tr['kl_z']:6.3f} {tr['kl_y']:6.3f} "
                     f"{tr['label_loss']:8.4f} {tr['label_acc'] if tr['label_acc']==tr['label_acc'] else float('nan'):7.3f} {int(tr['n_labeled_used']):5d} || "
-                    f"{va['loss_total']:10.4f} {va['loss_elbo']:10.4f} {va['recon']:6.3f} "
+                    f"{va['loss_total']:10.4f} {va['loss_elbo']:10.4f} {va['reco']:6.3f} "
                     f"{va['kl_z']:6.3f} {va['kl_y']:6.3f} "
                     f"{va['label_loss']:8.4f} {va['label_acc'] if va['label_acc']==va['label_acc'] else float('nan'):7.3f} {int(va['n_labeled_used']):5d}"
                 )
             else:
                 print(
                     f"{epoch:5d} | "
-                    f"{tr['loss_total']:10.4f} {tr['loss_elbo']:10.4f} {tr['recon']:6.3f} "
+                    f"{tr['loss_total']:10.4f} {tr['loss_elbo']:10.4f} {tr['reco']:6.3f} "
                     f"{tr['kl_z']:6.3f} {tr['kl_y']:6.3f} "
                     f"{tr['label_loss']:8.4f} {tr['label_acc'] if tr['label_acc']==tr['label_acc'] else float('nan'):7.3f} {int(tr['n_labeled_used']):5d}"
                 )
@@ -708,28 +888,37 @@ def train_wandb(
 
                 "train/loss_total": tr["loss_total"],
                 "train/loss_elbo": tr["loss_elbo"],
-                "train/recon": tr["recon"],
+                "train/reco": tr["reco"],
                 "train/kl_z": tr["kl_z"],
                 "train/kl_y": tr["kl_y"],
                 "train/label_loss": tr.get("label_loss", 0.0),
                 "train/label_acc": tr.get("label_acc", np.nan),
                 "train/n_labeled_used": tr.get("n_labeled_used", 0),
 
+                "train/pred_acc": tr.get("pred_acc", np.nan),
+                "train/pred_conf": tr.get("pred_conf", np.nan),
+                "train/pred_entropy": tr.get("pred_entropy", np.nan),
+                "train/n_pred_used": tr.get("n_pred_used", 0),
+
                 "hp/beta_z": beta_z,
                 "hp/beta_y": beta_y,
-                "hp/omega": omega,
+                "hp/omega": omega
             }
 
             if va is not None:
                 log_dict.update({
                     "val/loss_total": va["loss_total"],
                     "val/loss_elbo": va["loss_elbo"],
-                    "val/recon": va["recon"],
+                    "val/reco": va["reco"],
                     "val/kl_z": va["kl_z"],
                     "val/kl_y": va["kl_y"],
                     "val/label_loss": va.get("label_loss", 0.0),
                     "val/label_acc": va.get("label_acc", np.nan),
                     "val/n_labeled_used": va.get("n_labeled_used", 0),
+
+                    "val/pred_acc": va.get("pred_acc", np.nan),
+                    "val/pred_conf": va.get("pred_conf", np.nan),
+                    "val/pred_entropy": va.get("pred_entropy", np.nan)
                 })
 
             wandb.log(log_dict, step=epoch)
@@ -766,11 +955,61 @@ def train_wandb(
     return model
 
 
-
-
 # ---------------------------
 # Quick inference helpers
 # ---------------------------
+
+@torch.no_grad()
+def _prediction_stats_from_logits(
+    logits_y: torch.Tensor,                          # [B,K]
+    y: Optional[torch.Tensor],                       # [B] or None
+    mode: Literal["semi", "full", "off"] = "off",
+    unlabeled_value: int = -1,
+) -> Dict[str, object]:
+    """
+    Compute prediction stats from logits (or q_y derived from them).
+    Returns dict with:
+      - n_used (int)
+      - acc (float or None)
+      - conf_mean (float or None)
+      - entropy_mean (float or None)
+    Notes:
+      - If y is None -> n_used=0 and stats None
+      - If mode="semi" -> exclude y==unlabeled_value
+      - If mode="full" -> require all labeled; if unlabeled present, they are excluded anyway
+      - If mode="off" -> still compute over all labeled y provided (best for diagnostics)
+    """
+    if y is None:
+        return {"n_used": 0, "acc": None, "conf_mean": None, "entropy_mean": None}
+
+    y = y.long()
+    if mode == "semi":
+        mask = (y != unlabeled_value)
+    else:
+        # "full" or "off": if y includes unlabeled_value, exclude it anyway
+        mask = (y != unlabeled_value)
+
+    if mask.sum().item() == 0:
+        return {"n_used": 0, "acc": None, "conf_mean": None, "entropy_mean": None}
+
+    logits = logits_y[mask]                          # [n_used,K]
+    y_used = y[mask]                                 # [n_used]
+
+    qy = torch.softmax(logits, dim=-1)               # [n_used,K]
+    pred = torch.argmax(qy, dim=-1)                  # [n_used]
+    conf = torch.max(qy, dim=-1).values              # [n_used]
+
+    eps = 1e-10
+    ent = -(qy.clamp_min(eps) * torch.log(qy.clamp_min(eps))).sum(dim=-1)  # [n_used]
+
+    acc = (pred == y_used).float().mean().item()
+
+    return {
+        "n_used": int(mask.sum().item()),
+        "acc": float(acc),
+        "conf_mean": float(conf.mean().item()),
+        "entropy_mean": float(ent.mean().item()),
+    }
 
 @torch.no_grad()
 def predict_membership(model: GMVAE, x: torch.Tensor, device: Optional[str] = None) -> torch.Tensor:
